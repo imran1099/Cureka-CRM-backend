@@ -15,7 +15,14 @@ try {
 }
 
 const app = express();
-app.use(cors());
+// app.use(cors());
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "https://cureka-crm-frontend.vercel.app/login"
+  ],
+  credentials: true
+}));
 app.use(express.json({ limit: "5mb" }));
 
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
