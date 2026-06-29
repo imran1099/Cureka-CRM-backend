@@ -2,7 +2,7 @@ import mysql from "mysql2/promise";
 
 const connectionUri = process.env.DATABASE_URL
   ? process.env.DATABASE_URL.replace(/^mysql\+pymysql:\/\//, "mysql://")
-  : "mysql://root:root@localhost:3306/cureka_crm_db";
+  : "mysql://root:xnAKNPLYcINfjJVejJrqGZmbKKJRFCmv@reseau.proxy.rlwy.net:36200/cureka_crm_db";
 
 export const pool = mysql.createPool({
   uri: connectionUri,
