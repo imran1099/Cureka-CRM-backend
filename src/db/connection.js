@@ -2,7 +2,8 @@ import mysql from "mysql2/promise";
 
 const connectionUri = process.env.DATABASE_URL
   ? process.env.DATABASE_URL.replace(/^mysql\+pymysql:\/\//, "mysql://")
-  : "mysql://root:xnAKNPLYcINfjJVejJrqGZmbKKJRFCmv@reseau.proxy.rlwy.net:36200/cureka_crm_db";
+  // : "mysql://root:xnAKNPLYcINfjJVejJrqGZmbKKJRFCmv@reseau.proxy.rlwy.net:36200/cureka_crm_db";
+  : "mysql://root:root@localhost:3306/cureka_crm_db"
 
 export const pool = mysql.createPool({
   uri: connectionUri,
@@ -88,13 +89,17 @@ export async function initSchema() {
       preferred_language VARCHAR(100),
       household_notes TEXT,
       price_sensitivity VARCHAR(50),
-      product_name VARCHAR(255),
+      product_name TEXT,
       sku VARCHAR(255),
+      order_ids TEXT,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (assigned_agent_id) REFERENCES agents(id),
       KEY idx_customers_segment (segment),
-      KEY idx_customers_assigned (assigned_agent_id)
+      KEY idx_customers_assigned (assigned_agent_id),
+      KEY idx_customers_updated_at (updated_at),
+      KEY idx_customers_name (name),
+      KEY idx_customers_phone (phone)
     )
   `);
 
@@ -169,10 +174,14 @@ async function migrateExistingColumns() {
     ["allergies_restrictions", "TEXT"],
     ["preferred_contact_time", "VARCHAR(50)"],
     ["preferred_language", "VARCHAR(100)"],
+    ["cart_value", "DOUBLE DEFAULT 0"],
+    ["cart_items", "TEXT"],
+    ["cart_abandoned_at", "DATETIME"],
     ["household_notes", "TEXT"],
     ["price_sensitivity", "VARCHAR(50)"],
-    ["product_name", "VARCHAR(255)"],
+    ["product_name", "TEXT"],
     ["sku", "VARCHAR(255)"],
+    ["order_ids", "TEXT"],
   ];
 
   for (const [col, type] of newCustomerCols) {
@@ -198,5 +207,22 @@ async function migrateExistingColumns() {
     if (!existingCallCols.includes(col)) {
       await pool.query(`ALTER TABLE call_logs ADD COLUMN ${col} ${type}`);
     }
+  }
+
+  // Add indexes to customers table for pagination
+  const [indexCols] = await pool.query(
+    "SHOW INDEX FROM customers WHERE Key_name IN ('idx_customers_updated_at', 'idx_customers_name', 'idx_customers_phone')"
+  );
+  
+  const existingIndexes = indexCols.map((i) => i.Key_name);
+
+  if (!existingIndexes.includes("idx_customers_updated_at")) {
+    await pool.query("ALTER TABLE customers ADD INDEX idx_customers_updated_at (updated_at)");
+  }
+  if (!existingIndexes.includes("idx_customers_name")) {
+    await pool.query("ALTER TABLE customers ADD INDEX idx_customers_name (name)");
+  }
+  if (!existingIndexes.includes("idx_customers_phone")) {
+    await pool.query("ALTER TABLE customers ADD INDEX idx_customers_phone (phone)");
   }
 }

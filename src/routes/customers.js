@@ -112,28 +112,52 @@ router.get("/callbacks/due", async (req, res, next) => {
 // GET /api/customers — search / list (admin: all, agent: assigned scope optional)
 router.get("/", async (req, res, next) => {
   try {
-    const { q, segment, source } = req.query;
-    let sql = "SELECT * FROM customers WHERE 1=1";
+    const { q, segment, source, page = 1, limit = 50, sortBy = "updated_at", sortOrder = "desc" } = req.query;
+    
+    // Validate pagination params
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10) || 50)); // Max 100 rows per page
+    const offset = (pageNum - 1) * limitNum;
+
+    // Validate sorting
+    const allowedSortFields = ["updated_at", "name", "ltv", "created_at"];
+    const sortField = allowedSortFields.includes(sortBy) ? sortBy : "updated_at";
+    const sortDir = String(sortOrder).toLowerCase() === "asc" ? "ASC" : "DESC";
+
+    let conditionSql = "WHERE 1=1";
     const params = [];
 
     if (q) {
-      sql += " AND (name LIKE ? OR phone LIKE ?)";
+      conditionSql += " AND (name LIKE ? OR phone LIKE ?)";
       params.push(`%${q}%`, `%${q}%`);
     }
     if (segment && segment !== "all") {
-      sql += " AND segment = ?";
+      conditionSql += " AND segment = ?";
       params.push(segment);
     }
     if (source && source !== "all") {
-      sql += " AND source = ?";
+      conditionSql += " AND source = ?";
       params.push(source);
     }
-    sql += " ORDER BY updated_at DESC LIMIT 200";
+
+    // 1. Get total count for pagination
+    const countQuery = `SELECT COUNT(*) as total FROM customers ${conditionSql}`;
+    const { total } = await db.get(countQuery, ...params);
+
+    // 2. Fetch paginated records
+    const sql = `SELECT * FROM customers ${conditionSql} ORDER BY ${sortField} ${sortDir} LIMIT ${limitNum} OFFSET ${offset}`;
 
     const rows = await db.all(sql, ...params);
     const rowsWithCall = await Promise.all(rows.map(withLatestCall));
     const processedRows = rowsWithCall.map(withParsedFields);
-    res.json({ customers: processedRows });
+    
+    res.json({ 
+      customers: processedRows,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum)
+    });
   } catch (err) {
     next(err);
   }
@@ -177,8 +201,8 @@ router.post("/", async (req, res, next) => {
       `INSERT INTO customers
         (id, name, phone, email, age, gender, city, segment, source, ltv, last_order_date, replenish_due_date,
          cart_value, cart_items, cart_abandoned_at, assigned_agent_id,
-         health_conditions, product_preferences, allergies_restrictions, preferred_contact_time, preferred_language, household_notes, price_sensitivity, product_name, sku)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         health_conditions, product_preferences, allergies_restrictions, preferred_contact_time, preferred_language, household_notes, price_sensitivity, product_name, sku, order_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       b.name,
       b.phone,
@@ -203,7 +227,8 @@ router.post("/", async (req, res, next) => {
       b.household_notes || null,
       b.price_sensitivity || null,
       b.product_name || null,
-      b.sku || null
+      b.sku || null,
+      b.order_ids || null
     );
 
     res.status(201).json({ id });
@@ -223,8 +248,8 @@ router.post("/bulk", requireAdmin, async (req, res, next) => {
     const insertSql = `INSERT INTO customers
       (id, name, phone, email, age, gender, city, segment, source, ltv, last_order_date, replenish_due_date,
        cart_value, cart_items, cart_abandoned_at, assigned_agent_id,
-       health_conditions, product_preferences, allergies_restrictions, preferred_contact_time, preferred_language, household_notes, price_sensitivity, product_name, sku)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+       health_conditions, product_preferences, allergies_restrictions, preferred_contact_time, preferred_language, household_notes, price_sensitivity, product_name, sku, order_ids)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
     const toJsonArray = (val) => {
       if (!val) return null;
@@ -262,6 +287,7 @@ router.post("/bulk", requireAdmin, async (req, res, next) => {
           r.price_sensitivity || null,
           r.product_name || null,
           r.sku || null,
+          r.order_ids || null,
         ]);
         count++;
       }
@@ -285,7 +311,7 @@ router.patch("/:id", async (req, res, next) => {
       "replenish_due_date", "cart_value", "cart_items", "cart_abandoned_at",
       "assigned_agent_id", "callback_date", "do_not_call",
       "allergies_restrictions", "preferred_contact_time", "preferred_language", "household_notes", "price_sensitivity",
-      "product_name", "sku",
+      "product_name", "sku", "order_ids",
     ];
     const arrayFields = ["health_conditions", "product_preferences"];
 
