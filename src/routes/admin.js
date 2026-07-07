@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { nanoid } from "nanoid";
 import { db } from "../db/connection.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { getBrandCondition } from "../utils/dbHelpers.js";
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -14,6 +15,9 @@ router.get("/leaderboard", async (req, res, next) => {
     const sinceClause =
       range === "7d" ? "(NOW() - INTERVAL 7 DAY)" : range === "30d" ? "(NOW() - INTERVAL 30 DAY)" : "CURDATE()";
 
+    const clFilter = getBrandCondition(req, "call_logs");
+    const paramsCall = clFilter.params || (clFilter.param ? [clFilter.param] : []);
+
     const rows = await db.all(
       `SELECT
         agents.id, agents.name,
@@ -21,10 +25,11 @@ router.get("/leaderboard", async (req, res, next) => {
         SUM(CASE WHEN call_logs.outcome = 'sold' THEN 1 ELSE 0 END) as sales,
         SUM(CASE WHEN call_logs.outcome = 'sold' THEN call_logs.sale_amount ELSE 0 END) as revenue
       FROM agents
-      LEFT JOIN call_logs ON call_logs.agent_id = agents.id AND call_logs.called_at >= ${sinceClause}
-      WHERE agents.role = 'agent' AND agents.active = 1
+      LEFT JOIN call_logs ON call_logs.agent_id = agents.id AND call_logs.called_at >= ${sinceClause} AND ${clFilter.condition}
+      WHERE agents.role NOT IN ('admin', 'super_admin', 'read_only') AND agents.active = 1
       GROUP BY agents.id
-      ORDER BY revenue DESC`
+      ORDER BY revenue DESC`,
+      ...paramsCall
     );
 
     const leaderboard = rows.map((r) => ({
@@ -42,25 +47,35 @@ router.get("/leaderboard", async (req, res, next) => {
 // GET /api/admin/overview — top-line stats for the dashboard
 router.get("/overview", async (req, res, next) => {
   try {
+    const clFilter = getBrandCondition(req, "call_logs");
+    const paramsCall = clFilter.params || (clFilter.param ? [clFilter.param] : []);
+
     const today = await db.get(
       `SELECT
         COUNT(*) as calls_today,
-        SUM(CASE WHEN outcome = 'sold' THEN 1 ELSE 0 END) as sales_today,
-        SUM(CASE WHEN outcome = 'sold' THEN sale_amount ELSE 0 END) as revenue_today
-      FROM call_logs WHERE called_at >= CURDATE()`
+        SUM(CASE WHEN call_logs.outcome = 'sold' THEN 1 ELSE 0 END) as sales_today,
+        SUM(CASE WHEN call_logs.outcome = 'sold' THEN call_logs.sale_amount ELSE 0 END) as revenue_today
+      FROM call_logs WHERE call_logs.called_at >= CURDATE() AND ${clFilter.condition}`,
+      ...paramsCall
     );
 
+    const cbFilterCustomer = getBrandCondition(req, "customers");
+    const paramsCustomer = cbFilterCustomer.params || (cbFilterCustomer.param ? [cbFilterCustomer.param] : []);
+
     const segmentHealth = await db.all(
-      `SELECT segment, COUNT(*) as count, SUM(ltv) as total_ltv
-       FROM customers WHERE do_not_call = 0 GROUP BY segment`
+      `SELECT customers.segment, COUNT(DISTINCT customers.id) as count, SUM(customers.ltv) as total_ltv
+       FROM customers ${cbFilterCustomer.join} WHERE customers.do_not_call = 0 AND ${cbFilterCustomer.condition} GROUP BY customers.segment`,
+       ...paramsCustomer
     );
 
     const overdueCallbacks = await db.get(
-      `SELECT COUNT(*) as count FROM customers WHERE callback_date IS NOT NULL AND callback_date <= CURDATE()`
+      `SELECT COUNT(DISTINCT customers.id) as count FROM customers ${cbFilterCustomer.join} WHERE customers.callback_date IS NOT NULL AND customers.callback_date <= CURDATE() AND ${cbFilterCustomer.condition}`,
+      ...paramsCustomer
     );
 
     const unassigned = await db.get(
-      `SELECT COUNT(*) as count FROM customers WHERE assigned_agent_id IS NULL AND do_not_call = 0`
+      `SELECT COUNT(DISTINCT customers.id) as count FROM customers ${cbFilterCustomer.join} WHERE customers.assigned_agent_id IS NULL AND customers.do_not_call = 0 AND ${cbFilterCustomer.condition}`,
+      ...paramsCustomer
     );
 
     res.json({
@@ -68,15 +83,15 @@ router.get("/overview", async (req, res, next) => {
       salesToday: today.sales_today || 0,
       revenueToday: today.revenue_today || 0,
       segmentHealth,
-      overdueCallbacks: overdueCallbacks.count,
-      unassignedCustomers: unassigned.count,
+      overdueCallbacks: overdueCallbacks ? overdueCallbacks.count : 0,
+      unassignedCustomers: unassigned ? unassigned.count : 0,
     });
   } catch (err) {
     next(err);
   }
 });
 
-// GET /api/admin/agents — list all agents (for assignment dropdowns + management)
+// GET /api/admin/agents — list all agents
 router.get("/agents", async (req, res, next) => {
   try {
     const agents = await db.all("SELECT id, name, email, role, active, created_at FROM agents ORDER BY created_at ASC");
@@ -103,7 +118,7 @@ router.post("/agents", async (req, res, next) => {
       name,
       email.toLowerCase().trim(),
       hash,
-      role === "admin" ? "admin" : "agent"
+      role || "agent"
     );
 
     res.status(201).json({ id });

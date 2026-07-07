@@ -2,6 +2,7 @@ import express from "express";
 import { db } from "../db/connection.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { scoreCustomer, todayStr, daysBetween } from "../utils/ranking.js";
+import { getBrandCondition } from "../utils/dbHelpers.js";
 
 const router = express.Router();
 router.use(requireAuth, requireAdmin);
@@ -20,20 +21,28 @@ function rangeClause(range) {
 router.get("/attention", async (req, res, next) => {
   try {
     const today = todayStr();
+    const bc = getBrandCondition(req, "c"); // bc.join, bc.condition, bc.params
 
-    // Segment-level rollup: count, combined LTV, and how many are overdue/stale within each segment
+    const cJoin = bc.join.replace("c.id", "id"); 
+    const cbFilterCustomer = getBrandCondition(req, "customers");
+    const clFilter = getBrandCondition(req, "call_logs");
+
+    const paramsCustomer = cbFilterCustomer.params || (cbFilterCustomer.param ? [cbFilterCustomer.param] : []);
+    const paramsCall = clFilter.params || (clFilter.param ? [clFilter.param] : []);
+
     const segmentRows = await db.all(
-      `SELECT segment, COUNT(*) as count, SUM(ltv) as total_ltv, AVG(ltv) as avg_ltv
-       FROM customers WHERE do_not_call = 0 GROUP BY segment`
+      `SELECT customers.segment, COUNT(DISTINCT customers.id) as count, SUM(customers.ltv) as total_ltv, AVG(customers.ltv) as avg_ltv
+       FROM customers ${cbFilterCustomer.join} WHERE customers.do_not_call = 0 AND ${cbFilterCustomer.condition} GROUP BY customers.segment`,
+      ...paramsCustomer
     );
 
-    // Dormant high-LTV customers piling up without contact — the highest-value "leaking" group
     const dormantPilingRows = await db.all(
       `SELECT c.id, c.name, c.phone, c.ltv, c.last_order_date, c.assigned_agent_id, a.name as agent_name,
               (SELECT MAX(called_at) FROM call_logs WHERE customer_id = c.id) as last_call_at
-       FROM customers c LEFT JOIN agents a ON a.id = c.assigned_agent_id
-       WHERE c.segment = 'dormant' AND c.do_not_call = 0
-       ORDER BY c.ltv DESC LIMIT 10`
+       FROM customers c ${bc.join} LEFT JOIN agents a ON a.id = c.assigned_agent_id
+       WHERE c.segment = 'dormant' AND c.do_not_call = 0 AND ${bc.condition}
+       GROUP BY c.id ORDER BY c.ltv DESC LIMIT 10`,
+       ...(bc.params || (bc.param ? [bc.param] : []))
     );
 
     const dormantPiling = dormantPilingRows.map((c) => ({
@@ -42,12 +51,12 @@ router.get("/attention", async (req, res, next) => {
       days_since_last_call: c.last_call_at ? daysBetween(c.last_call_at.slice(0, 10), today) : null,
     }));
 
-    // Overdue callbacks — promises made to customers that are now late
     const overdueCallbacksRows = await db.all(
       `SELECT c.id, c.name, c.phone, c.ltv, c.callback_date, a.name as agent_name
-       FROM customers c LEFT JOIN agents a ON a.id = c.assigned_agent_id
-       WHERE c.callback_date IS NOT NULL AND c.callback_date <= CURDATE() AND c.do_not_call = 0
-       ORDER BY c.callback_date ASC`
+       FROM customers c ${bc.join} LEFT JOIN agents a ON a.id = c.assigned_agent_id
+       WHERE c.callback_date IS NOT NULL AND c.callback_date <= CURDATE() AND c.do_not_call = 0 AND ${bc.condition}
+       GROUP BY c.id ORDER BY c.callback_date ASC`,
+       ...(bc.params || (bc.param ? [bc.param] : []))
     );
 
     const overdueCallbacks = overdueCallbacksRows.map((c) => ({
@@ -55,21 +64,21 @@ router.get("/attention", async (req, res, next) => {
       days_overdue: daysBetween(c.callback_date, today),
     }));
 
-    // Stale replenishment customers — overdue by more than a few days, revenue actively being missed
     const staleReplenishmentRows = await db.all(
       `SELECT c.id, c.name, c.phone, c.ltv, c.replenish_due_date, a.name as agent_name
-       FROM customers c LEFT JOIN agents a ON a.id = c.assigned_agent_id
-       WHERE c.segment = 'replenishment' AND c.do_not_call = 0 AND c.replenish_due_date IS NOT NULL
-       ORDER BY c.replenish_due_date ASC LIMIT 10`
+       FROM customers c ${bc.join} LEFT JOIN agents a ON a.id = c.assigned_agent_id
+       WHERE c.segment = 'replenishment' AND c.do_not_call = 0 AND c.replenish_due_date IS NOT NULL AND ${bc.condition}
+       GROUP BY c.id ORDER BY c.replenish_due_date ASC LIMIT 10`,
+       ...(bc.params || (bc.param ? [bc.param] : []))
     );
 
     const staleReplenishment = staleReplenishmentRows
       .map((c) => ({ ...c, days_overdue: daysBetween(c.replenish_due_date, today) }))
       .filter((c) => c.days_overdue >= 0);
 
-    // Unassigned customers (nobody's queue picks them up by default unless segment filter is "all")
     const unassignedCountResult = await db.get(
-      "SELECT COUNT(*) as count FROM customers WHERE assigned_agent_id IS NULL AND do_not_call = 0"
+      `SELECT COUNT(DISTINCT customers.id) as count FROM customers ${cbFilterCustomer.join} WHERE customers.assigned_agent_id IS NULL AND customers.do_not_call = 0 AND ${cbFilterCustomer.condition}`,
+      ...paramsCustomer
     );
     const unassignedCount = unassignedCountResult ? unassignedCountResult.count : 0;
 
@@ -85,11 +94,13 @@ router.get("/attention", async (req, res, next) => {
   }
 });
 
-// GET /api/insights/agents?range=today|7d|30d — coaching signals per agent
 router.get("/agents", async (req, res, next) => {
   try {
     const range = req.query.range || "7d";
     const since = rangeClause(range);
+    
+    const clFilter = getBrandCondition(req, "call_logs");
+    const paramsCall = clFilter.params || (clFilter.param ? [clFilter.param] : []);
 
     const agentStats = await db.all(
       `SELECT
@@ -102,18 +113,19 @@ router.get("/agents", async (req, res, next) => {
         SUM(CASE WHEN call_logs.sentiment = 'negative' THEN 1 ELSE 0 END) as negative_calls,
         AVG(call_logs.interest_level) as avg_interest_level
       FROM agents
-      LEFT JOIN call_logs ON call_logs.agent_id = agents.id AND call_logs.called_at >= ${since}
+      LEFT JOIN call_logs ON call_logs.agent_id = agents.id AND call_logs.called_at >= ${since} AND ${clFilter.condition}
       WHERE agents.role = 'agent' AND agents.active = 1
       GROUP BY agents.id
-      ORDER BY revenue DESC`
+      ORDER BY revenue DESC`,
+      ...paramsCall
     );
 
-    // Top objection per agent — helps distinguish "needs pricing talk-track" vs "needs trust-building help"
     const objectionsByAgent = await db.all(
-      `SELECT agent_id, objection_type, COUNT(*) as count
+      `SELECT call_logs.agent_id, call_logs.objection_type, COUNT(*) as count
        FROM call_logs
-       WHERE called_at >= ${since} AND objection_type IS NOT NULL AND objection_type != 'no_objection'
-       GROUP BY agent_id, objection_type`
+       WHERE call_logs.called_at >= ${since} AND call_logs.objection_type IS NOT NULL AND call_logs.objection_type != 'no_objection' AND ${clFilter.condition}
+       GROUP BY call_logs.agent_id, call_logs.objection_type`,
+       ...paramsCall
     );
 
     const topObjectionByAgent = {};
@@ -137,37 +149,42 @@ router.get("/agents", async (req, res, next) => {
   }
 });
 
-// GET /api/insights/conversion?range=today|7d|30d — why sales are/aren't converting
 router.get("/conversion", async (req, res, next) => {
   try {
     const range = req.query.range || "7d";
     const since = rangeClause(range);
+    
+    const clFilter = getBrandCondition(req, "call_logs");
+    const paramsCall = clFilter.params || (clFilter.param ? [clFilter.param] : []);
 
     const outcomeBreakdown = await db.all(
-      `SELECT outcome, COUNT(*) as count FROM call_logs WHERE called_at >= ${since} GROUP BY outcome ORDER BY count DESC`
+      `SELECT call_logs.outcome, COUNT(*) as count FROM call_logs WHERE call_logs.called_at >= ${since} AND ${clFilter.condition} GROUP BY call_logs.outcome ORDER BY count DESC`,
+      ...paramsCall
     );
 
     const objectionBreakdown = await db.all(
-      `SELECT objection_type, COUNT(*) as count FROM call_logs
-       WHERE called_at >= ${since} AND objection_type IS NOT NULL
-       GROUP BY objection_type ORDER BY count DESC`
+      `SELECT call_logs.objection_type, COUNT(*) as count FROM call_logs
+       WHERE call_logs.called_at >= ${since} AND call_logs.objection_type IS NOT NULL AND ${clFilter.condition}
+       GROUP BY call_logs.objection_type ORDER BY count DESC`,
+      ...paramsCall
     );
 
     const sentimentBreakdown = await db.all(
-      `SELECT sentiment, COUNT(*) as count FROM call_logs
-       WHERE called_at >= ${since} AND sentiment IS NOT NULL
-       GROUP BY sentiment ORDER BY count DESC`
+      `SELECT call_logs.sentiment, COUNT(*) as count FROM call_logs
+       WHERE call_logs.called_at >= ${since} AND call_logs.sentiment IS NOT NULL AND ${clFilter.condition}
+       GROUP BY call_logs.sentiment ORDER BY count DESC`,
+      ...paramsCall
     );
 
-    // Conversion rate by segment — which customer types convert best/worst right now
     const conversionBySegmentRows = await db.all(
       `SELECT c.segment,
               COUNT(cl.id) as calls,
               SUM(CASE WHEN cl.outcome = 'sold' THEN 1 ELSE 0 END) as sales,
               SUM(CASE WHEN cl.outcome = 'sold' THEN cl.sale_amount ELSE 0 END) as revenue
        FROM call_logs cl JOIN customers c ON c.id = cl.customer_id
-       WHERE cl.called_at >= ${since}
-       GROUP BY c.segment`
+       WHERE cl.called_at >= ${since} AND ${clFilter.condition.replace('call_logs.brand_id', 'cl.brand_id')}
+       GROUP BY c.segment`,
+      ...paramsCall
     );
 
     const conversionBySegment = conversionBySegmentRows.map((s) => ({
@@ -176,14 +193,14 @@ router.get("/conversion", async (req, res, next) => {
       revenue: s.revenue || 0,
     }));
 
-    // Price sensitivity vs conversion — directly answers "is price the issue, or something else?"
     const conversionByPriceSensitivityRows = await db.all(
       `SELECT c.price_sensitivity,
               COUNT(cl.id) as calls,
               SUM(CASE WHEN cl.outcome = 'sold' THEN 1 ELSE 0 END) as sales
        FROM call_logs cl JOIN customers c ON c.id = cl.customer_id
-       WHERE cl.called_at >= ${since} AND c.price_sensitivity IS NOT NULL
-       GROUP BY c.price_sensitivity`
+       WHERE cl.called_at >= ${since} AND c.price_sensitivity IS NOT NULL AND ${clFilter.condition.replace('call_logs.brand_id', 'cl.brand_id')}
+       GROUP BY c.price_sensitivity`,
+      ...paramsCall
     );
 
     const conversionByPriceSensitivity = conversionByPriceSensitivityRows.map((s) => ({
@@ -191,9 +208,12 @@ router.get("/conversion", async (req, res, next) => {
       conversion: s.calls > 0 ? Math.round((s.sales / s.calls) * 1000) / 10 : 0,
     }));
 
-    // Trending behavioral/health tags — what's showing up most across the customer base right now
+    const tagsFilter = getBrandCondition(req, "customer_tags");
+    const paramsTags = tagsFilter.params || (tagsFilter.param ? [tagsFilter.param] : []);
+
     const trendingTags = await db.all(
-      `SELECT tag, tag_type, COUNT(*) as count FROM customer_tags GROUP BY tag, tag_type ORDER BY count DESC LIMIT 15`
+      `SELECT customer_tags.tag, customer_tags.tag_type, COUNT(*) as count FROM customer_tags WHERE ${tagsFilter.condition} GROUP BY customer_tags.tag, customer_tags.tag_type ORDER BY count DESC LIMIT 15`,
+      ...paramsTags
     );
 
     res.json({
