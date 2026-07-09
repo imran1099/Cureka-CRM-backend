@@ -3,6 +3,8 @@ import { nanoid } from "nanoid";
 import { db } from "../db/connection.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
+import { createTimelineEvent } from "../services/timelineService.js";
+import { processWorkflowRules } from "../services/followupService.js";
 
 const router = express.Router();
 router.use(requireAuth);
@@ -125,11 +127,20 @@ router.post("/opportunities", requireBrandAccess, async (req, res, next) => {
       "oa_" + nanoid(10), id, agentId, "created", "Opportunity created", "stage_new_lead"
     );
 
-    // Update customer timeline
-    await db.run(
-      "INSERT INTO customer_timeline_events (id, customer_id, event_type, description, agent_id) VALUES (?, ?, ?, ?, ?)",
-      "cte_" + nanoid(10), customer_id, "OPPORTUNITY_CREATED", `New opportunity: ${type || "general"}`, agentId
-    ).catch(() => {});
+    // Timeline event (replaces old broken insert)
+    createTimelineEvent({
+      customerId: customer_id, brandId: brand_id || null,
+      eventType: "opportunity_created",
+      eventTitle: `New ${type || "general"} opportunity opened`,
+      eventDescription: `Source: ${source || "manual"}. Expected revenue: ₹${expected_revenue || 0}.`,
+      agentId, sourceSystem: "cre", refId: id, refType: "opportunity",
+    }).catch(() => {});
+
+    // Workflow automation
+    processWorkflowRules("opportunity_created", {
+      customerId: customer_id, brandId: brand_id || null,
+      assignedAgentId: agentId, relatedOpportunityId: id,
+    }).catch(() => {});
 
     res.status(201).json({ id });
   } catch (err) { next(err); }
@@ -194,9 +205,24 @@ router.patch("/opportunities/:id", async (req, res, next) => {
     if (outcome === "lost" && !lost_reason) {
       return res.status(400).json({ error: "lost_reason is required when marking as lost" });
     }
-    // Validation: Won requires order
-    if (outcome === "won" && !order_id && !opp.order_id) {
-      return res.status(400).json({ error: "order_id is required when marking as won" });
+    // Validation: Won requires a valid order_id
+    const finalOrderId = order_id || opp.order_id;
+    let isWon = outcome === "won";
+    let toStage = null;
+    let fromStage = null;
+    if (stage_id && stage_id !== opp.stage_id) {
+      toStage = await db.get("SELECT name, is_won, is_lost FROM opportunity_stages WHERE id = ?", stage_id);
+      fromStage = await db.get("SELECT name FROM opportunity_stages WHERE id = ?", opp.stage_id);
+      if (toStage?.is_won) isWon = true;
+    } else {
+      const currStage = await db.get("SELECT is_won FROM opportunity_stages WHERE id = ?", opp.stage_id);
+      if (currStage?.is_won) isWon = true;
+    }
+
+    if (isWon) {
+      if (!finalOrderId) return res.status(400).json({ error: "order_id is required when marking as won" });
+      const orderExists = await db.get("SELECT id FROM orders WHERE id = ?", finalOrderId);
+      if (!orderExists) return res.status(400).json({ error: "Invalid order_id. Order not found in database." });
     }
 
     const newStageId = stage_id || opp.stage_id;
@@ -216,15 +242,44 @@ router.patch("/opportunities/:id", async (req, res, next) => {
 
     // Activity log
     if (stageChanged) {
-      const [fromStage, toStage] = await Promise.all([
-        db.get("SELECT name FROM opportunity_stages WHERE id = ?", opp.stage_id),
-        db.get("SELECT name, is_won, is_lost FROM opportunity_stages WHERE id = ?", newStageId),
-      ]);
+      // toStage and fromStage already fetched in validation block
+      if (!toStage) {
+        toStage = await db.get("SELECT name, is_won, is_lost FROM opportunity_stages WHERE id = ?", newStageId);
+        fromStage = await db.get("SELECT name FROM opportunity_stages WHERE id = ?", opp.stage_id);
+      }
       await db.run(
         "INSERT INTO opportunity_activities (id, opportunity_id, agent_id, activity_type, description, from_stage, to_stage) VALUES (?, ?, ?, ?, ?, ?, ?)",
         "oa_" + nanoid(10), req.params.id, agentId, "stage_change",
         `Stage changed: ${fromStage?.name} → ${toStage?.name}`, opp.stage_id, newStageId
       );
+
+      // Timeline: stage change event
+      if (toStage?.is_won) {
+        createTimelineEvent({
+          customerId: opp.customer_id, brandId: opp.brand_id,
+          eventType: "deal_won",
+          eventTitle: `Deal won 🏆 — Order ${order_id || opp.order_id}`,
+          eventDescription: `Opportunity converted at ₹${expected_revenue || opp.expected_revenue || 0}. Order ID: ${order_id || opp.order_id}.`,
+          agentId, sourceSystem: "cre", refId: req.params.id, refType: "opportunity",
+          outcome: "won",
+        }).catch(() => {});
+      } else if (toStage?.is_lost) {
+        createTimelineEvent({
+          customerId: opp.customer_id, brandId: opp.brand_id,
+          eventType: "deal_lost",
+          eventTitle: `Deal lost — ${lost_reason || "No reason given"}`,
+          eventDescription: lost_reason,
+          agentId, sourceSystem: "cre", refId: req.params.id, refType: "opportunity",
+          outcome: "lost",
+        }).catch(() => {});
+      } else {
+        createTimelineEvent({
+          customerId: opp.customer_id, brandId: opp.brand_id,
+          eventType: "stage_change",
+          eventTitle: `Pipeline stage: ${fromStage?.name} → ${toStage?.name}`,
+          agentId, sourceSystem: "cre", refId: req.params.id, refType: "opportunity",
+        }).catch(() => {});
+      }
 
       // Revenue attribution on Won
       if (toStage?.is_won && (order_id || opp.order_id)) {
@@ -368,6 +423,73 @@ router.post("/campaigns", async (req, res, next) => {
       start_date || null, end_date || null, revenue_target || 0, req.user.id
     );
     res.status(201).json({ id });
+  } catch (err) { next(err); }
+});
+
+router.patch("/campaigns/:id", async (req, res, next) => {
+  try {
+    const { name, brand_id, type, description, start_date, end_date, revenue_target, is_active } = req.body;
+    await db.run(
+      `UPDATE cre_campaigns SET
+       name = COALESCE(?, name), brand_id = COALESCE(?, brand_id), type = COALESCE(?, type),
+       description = COALESCE(?, description), start_date = COALESCE(?, start_date),
+       end_date = COALESCE(?, end_date), revenue_target = COALESCE(?, revenue_target),
+       is_active = COALESCE(?, is_active)
+       WHERE id = ?`,
+      name, brand_id, type, description, start_date, end_date, revenue_target, is_active, req.params.id
+    );
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+router.delete("/campaigns/:id", async (req, res, next) => {
+  try {
+    await db.run("DELETE FROM cre_campaigns WHERE id = ?", req.params.id);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ─── Product Recommendations ──────────────────────────────────────────────────
+router.get("/recommendations/:customerId", async (req, res, next) => {
+  try {
+    const { customerId } = req.params;
+    const limit = parseInt(req.query.limit, 10) || 5;
+    
+    const recs = await db.all(
+      `SELECT r.*, p.name, p.price, p.image_url, p.category 
+       FROM product_recommendations r
+       JOIN products p ON p.id = r.product_id
+       WHERE r.customer_id = ? 
+       ORDER BY r.score DESC LIMIT ?`,
+      customerId, limit
+    );
+
+    if (recs.length > 0) {
+      return res.json({ recommendations: recs });
+    }
+
+    const fallback = await db.all(
+      `SELECT p.id as product_id, p.name, p.price, p.image_url, p.category, 'fallback' as recommendation_type, 1.0 as score
+       FROM products p
+       WHERE p.is_active = 1
+       ORDER BY RAND() LIMIT ?`,
+      limit
+    );
+    res.json({ recommendations: fallback });
+  } catch (err) { next(err); }
+});
+
+// ─── AI Analytics (Stub) ────────────────────────────────────────────────────
+router.get("/ai-forecast", async (req, res, next) => {
+  try {
+    res.json({
+      forecast: {
+        expected_monthly_revenue: 150000,
+        confidence_interval: "85%",
+        top_growth_segment: "Sleep Care (Repeat Purchasers)",
+        churn_risk_accounts: 12
+      }
+    });
   } catch (err) { next(err); }
 });
 

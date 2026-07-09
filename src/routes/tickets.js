@@ -5,6 +5,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
 import { getBrandCondition } from "../utils/dbHelpers.js";
 import { applySlaRules, autoAssignTicket, logTicketEvent } from "../services/ticketEngine.js";
+import { createTimelineEvent } from "../services/timelineService.js";
+import { processWorkflowRules } from "../services/followupService.js";
 
 const router = express.Router();
 router.use(requireAuth);
@@ -79,6 +81,22 @@ router.post("/", requireBrandAccess, async (req, res, next) => {
     );
 
     await logTicketEvent(id, "CREATED", `Ticket created via ${source}`, req.user.id);
+
+    // Timeline event
+    createTimelineEvent({
+      customerId: customer_id, brandId: brand_id,
+      eventType: "ticket_created",
+      eventTitle: `Support ticket opened (${priority} priority)`,
+      eventDescription: `Source: ${source}. Department: ${department || 'General'}.`,
+      agentId: req.user.id, department, sourceSystem: "tickets",
+      refId: id, refType: "ticket",
+    }).catch(() => {});
+
+    // Workflow automation: auto-create follow-up for high priority tickets
+    processWorkflowRules("ticket_created", {
+      customerId: customer_id, brandId: brand_id,
+      priority, assignedAgentId: req.user.id, relatedTicketId: id,
+    }).catch(() => {});
 
     // Run engines
     if (category_id) {
@@ -155,7 +173,33 @@ router.patch("/:id", requireBrandAccess, async (req, res, next) => {
       updates.push("updated_at = NOW()");
       await db.run(`UPDATE tickets SET ${updates.join(", ")} WHERE id = ?`, ...params, ticket.id);
     }
-    
+
+    // Timeline events for status changes
+    if (status && status !== ticket.status) {
+      const eventMap = { resolved: "ticket_resolved", closed: "ticket_resolved", escalated: "ticket_escalated" };
+      const evType = eventMap[status];
+      if (evType) {
+        createTimelineEvent({
+          customerId: ticket.customer_id, brandId: ticket.brand_id,
+          eventType: evType,
+          eventTitle: `Ticket ${status} — #${ticket.id}`,
+          eventDescription: `Ticket status changed to ${status}.`,
+          agentId: req.user.id, department: ticket.department,
+          sourceSystem: "tickets", refId: ticket.id, refType: "ticket",
+          outcome: status,
+        }).catch(() => {});
+      }
+    }
+    if (assigned_agent_id !== undefined && assigned_agent_id !== ticket.assigned_agent_id) {
+      createTimelineEvent({
+        customerId: ticket.customer_id, brandId: ticket.brand_id,
+        eventType: "ticket_assigned",
+        eventTitle: `Ticket assigned to agent — #${ticket.id}`,
+        agentId: req.user.id, department: ticket.department,
+        sourceSystem: "tickets", refId: ticket.id, refType: "ticket",
+      }).catch(() => {});
+    }
+
     res.json({ updated: true });
   } catch (err) {
     next(err);

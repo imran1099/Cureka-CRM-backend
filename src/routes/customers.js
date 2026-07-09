@@ -3,6 +3,8 @@ import { nanoid } from "nanoid";
 import { db } from "../db/connection.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
+import { createTimelineEvent } from "../services/timelineService.js";
+import { processWorkflowRules } from "../services/followupService.js";
 import { scoreCustomer, todayStr } from "../utils/ranking.js";
 import { getBrandCondition } from "../utils/dbHelpers.js";
 
@@ -262,6 +264,17 @@ router.post("/", requireBrandAccess, async (req, res, next) => {
       );
     }
 
+    // Timeline: new customer registration event (only for truly new records)
+    if (!exists) {
+      createTimelineEvent({
+        customerId: id, brandId: b.brand_id,
+        eventType: "customer_registered",
+        eventTitle: `Customer registered via ${b.source || "manual_upload"}`,
+        eventDescription: `Segment: ${b.segment}. Source: ${b.source || "manual_upload"}.`,
+        sourceSystem: "customers",
+      }).catch(() => {});
+    }
+
     res.status(201).json({ id });
   } catch (err) {
     next(err);
@@ -417,10 +430,42 @@ router.patch("/:id", requireBrandAccess, async (req, res, next) => {
     updates.push("updated_at = NOW()");
     await db.run(`UPDATE customers SET ${updates.join(", ")} WHERE id = ?`, ...params, req.params.id);
 
+    // Cart abandoned → trigger workflow rules
+    if ("cart_abandoned_at" in req.body && req.body.cart_abandoned_at) {
+      const brandLink = await db.get("SELECT brand_id FROM customer_brands WHERE customer_id = ? LIMIT 1", req.params.id);
+      processWorkflowRules("cart_abandoned", {
+        customerId: req.params.id,
+        brandId: brandLink?.brand_id || null,
+        assignedAgentId: req.user.id,
+      }).catch(() => {});
+    }
+
     res.json({ updated: true });
   } catch (err) {
     next(err);
   }
+});
+
+// POST /api/customers/:id/cart-abandoned — Shopify webhook trigger
+router.post("/:id/cart-abandoned", requireBrandAccess, async (req, res, next) => {
+  try {
+    const { brand_id, cart_value, cart_items } = req.body;
+    await db.run(
+      "UPDATE customers SET cart_value = ?, cart_items = ?, cart_abandoned_at = NOW(), updated_at = NOW() WHERE id = ?",
+      cart_value || null, cart_items || null, req.params.id
+    );
+    processWorkflowRules("cart_abandoned", {
+      customerId: req.params.id, brandId: brand_id || null,
+      assignedAgentId: req.user.id,
+    }).catch(() => {});
+    createTimelineEvent({
+      customerId: req.params.id, brandId: brand_id || null,
+      eventType: "order_placed",
+      eventTitle: `Cart abandoned — ₹${cart_value || 0}`,
+      sourceSystem: "customers",
+    }).catch(() => {});
+    res.json({ ok: true });
+  } catch (err) { next(err); }
 });
 
 // DELETE /api/customers/:id
@@ -540,13 +585,18 @@ router.post("/:id/notes", requireBrandAccess, async (req, res, next) => {
 // POST /api/customers/:id/followups
 router.post("/:id/followups", requireBrandAccess, async (req, res, next) => {
   try {
-    const { due_date, reason, assigned_agent_id } = req.body;
+    const { due_date, reason, assigned_agent_id, brand_id, category_id } = req.body;
     if (!due_date) return res.status(400).json({ error: "due_date is required" });
-    const id = "fup_" + nanoid(10);
-    await db.run(
-      "INSERT INTO customer_followups (id, customer_id, assigned_agent_id, due_date, reason) VALUES (?, ?, ?, ?, ?)",
-      id, req.params.id, assigned_agent_id || req.user.id, due_date, reason || null
-    );
+    const id = await createFollowup({
+      customerId: req.params.id,
+      brandId: brand_id || null,
+      categoryId: category_id || null,
+      assignedAgentId: assigned_agent_id || req.user.id,
+      createdByAgentId: req.user.id,
+      title: reason || "Follow-up",
+      dueAt: new Date(due_date).toISOString().slice(0, 19).replace("T", " "),
+      source: "customer_profile",
+    });
     res.status(201).json({ id });
   } catch (err) {
     next(err);

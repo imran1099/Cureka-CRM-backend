@@ -4,6 +4,7 @@ import { nanoid } from "nanoid";
 const connectionUri = process.env.DATABASE_URL
   ? process.env.DATABASE_URL.replace(/^mysql\+pymysql:\/\//, "mysql://")
   : "mysql://root:root@localhost:3306/cureka_crm_db";
+// : "mysql://root:ioYkajsDqbcsbxCwIKLyLSIRyeLguYvg@hayabusa.proxy.rlwy.net:25408/cureka_crm_db";
 
 export const pool = mysql.createPool({
   uri: connectionUri,
@@ -673,6 +674,75 @@ export async function initSchema() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS products (
+      id VARCHAR(255) PRIMARY KEY,
+      sku VARCHAR(100) UNIQUE,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      category VARCHAR(100),
+      price DOUBLE NOT NULL DEFAULT 0,
+      image_url TEXT,
+      brand_id VARCHAR(255),
+      is_active TINYINT(1) DEFAULT 1,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id VARCHAR(255) PRIMARY KEY,
+      shopify_order_id VARCHAR(255),
+      customer_id VARCHAR(255) NOT NULL,
+      brand_id VARCHAR(255),
+      total_amount DOUBLE NOT NULL DEFAULT 0,
+      status VARCHAR(50) DEFAULT 'completed',
+      ordered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS order_items (
+      id VARCHAR(255) PRIMARY KEY,
+      order_id VARCHAR(255) NOT NULL,
+      product_id VARCHAR(255),
+      quantity INT NOT NULL DEFAULT 1,
+      price DOUBLE NOT NULL DEFAULT 0,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_recommendations (
+      id VARCHAR(255) PRIMARY KEY,
+      customer_id VARCHAR(255) NOT NULL,
+      product_id VARCHAR(255) NOT NULL,
+      recommendation_type VARCHAR(50),
+      score DOUBLE DEFAULT 0,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_sync_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      brand_id VARCHAR(255),
+      sync_type VARCHAR(50),
+      status VARCHAR(50),
+      records_processed INT DEFAULT 0,
+      started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME,
+      error_message TEXT
+    )
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS revenue_attribution (
       id VARCHAR(255) PRIMARY KEY,
       opportunity_id VARCHAR(255),
@@ -684,9 +754,211 @@ export async function initSchema() {
       type VARCHAR(100),
       amount DOUBLE NOT NULL DEFAULT 0,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE SET NULL,
+      FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL,
+      FOREIGN KEY (campaign_id) REFERENCES cre_campaigns(id) ON DELETE SET NULL,
       KEY idx_rev_attr_agent (agent_id),
       KEY idx_rev_attr_brand (brand_id),
       KEY idx_rev_attr_campaign (campaign_id)
+    )
+  `);
+
+  // ─── Customer Journey Intelligence Timeline ────────────────────────────────
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS timeline_event_types (
+      id VARCHAR(100) PRIMARY KEY,
+      category VARCHAR(50) NOT NULL,
+      label VARCHAR(255) NOT NULL,
+      icon VARCHAR(10) NOT NULL DEFAULT '📌',
+      color VARCHAR(20) NOT NULL DEFAULT '#64748B',
+      is_active TINYINT(1) NOT NULL DEFAULT 1
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS customer_timeline (
+      id VARCHAR(255) PRIMARY KEY,
+      customer_id VARCHAR(255) NOT NULL,
+      brand_id VARCHAR(255),
+      event_type VARCHAR(100) NOT NULL,
+      event_title VARCHAR(500) NOT NULL,
+      event_description TEXT,
+      outcome VARCHAR(100),
+      agent_id VARCHAR(255),
+      department VARCHAR(100),
+      source_system VARCHAR(100) NOT NULL DEFAULT 'manual',
+      ref_id VARCHAR(255),
+      ref_type VARCHAR(50),
+      metadata JSON,
+      is_internal TINYINT(1) NOT NULL DEFAULT 0,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+      KEY idx_ct_customer (customer_id),
+      KEY idx_ct_brand (brand_id),
+      KEY idx_ct_event_type (event_type),
+      KEY idx_ct_created_at (created_at),
+      KEY idx_ct_ref (ref_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS timeline_milestones (
+      id VARCHAR(255) PRIMARY KEY,
+      customer_id VARCHAR(255) NOT NULL,
+      milestone_type VARCHAR(100) NOT NULL,
+      label VARCHAR(255) NOT NULL,
+      icon VARCHAR(10) DEFAULT '🏆',
+      achieved_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      metadata JSON,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      KEY idx_tm_customer (customer_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS timeline_insights (
+      id VARCHAR(255) PRIMARY KEY,
+      customer_id VARCHAR(255) NOT NULL,
+      insight_type VARCHAR(100) NOT NULL,
+      content TEXT NOT NULL,
+      is_ai_generated TINYINT(1) NOT NULL DEFAULT 0,
+      generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      KEY idx_ti_customer (customer_id)
+    )
+  `);
+
+  // ─── Intelligent Follow-up & Workflow Automation Engine (IFWAE) ──────────────
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS followup_categories (
+      id VARCHAR(100) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      group_name VARCHAR(100) NOT NULL,
+      default_priority VARCHAR(20) NOT NULL DEFAULT 'medium',
+      default_sla_hours INT NOT NULL DEFAULT 24,
+      icon VARCHAR(10) DEFAULT '📋',
+      color VARCHAR(20) DEFAULT '#6B7280',
+      is_active TINYINT(1) NOT NULL DEFAULT 1
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS customer_followups (
+      id VARCHAR(255) PRIMARY KEY,
+      customer_id VARCHAR(255) NOT NULL,
+      brand_id VARCHAR(255),
+      category_id VARCHAR(100),
+      assigned_agent_id VARCHAR(255),
+      related_order_id VARCHAR(255),
+      related_ticket_id VARCHAR(255),
+      related_opportunity_id VARCHAR(255),
+      title VARCHAR(500) NOT NULL,
+      description TEXT,
+      priority VARCHAR(20) NOT NULL DEFAULT 'medium',
+      priority_score INT NOT NULL DEFAULT 50,
+      status VARCHAR(50) NOT NULL DEFAULT 'scheduled',
+      due_at DATETIME NOT NULL,
+      reminder_at DATETIME,
+      outcome VARCHAR(100),
+      outcome_notes TEXT,
+      reschedule_reason TEXT,
+      escalation_level INT NOT NULL DEFAULT 0,
+      source VARCHAR(100) NOT NULL DEFAULT 'manual',
+      created_by_agent_id VARCHAR(255),
+      completed_at DATETIME,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL,
+      FOREIGN KEY (assigned_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by_agent_id) REFERENCES agents(id) ON DELETE SET NULL,
+      KEY idx_fup_customer (customer_id),
+      KEY idx_fup_agent (assigned_agent_id),
+      KEY idx_fup_status (status),
+      KEY idx_fup_due_at (due_at),
+      KEY idx_fup_brand (brand_id),
+      KEY idx_fup_category (category_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS followup_reminders (
+      id VARCHAR(255) PRIMARY KEY,
+      followup_id VARCHAR(255) NOT NULL,
+      remind_at DATETIME NOT NULL,
+      channel VARCHAR(50) NOT NULL DEFAULT 'in_app',
+      sent_at DATETIME,
+      is_sent TINYINT(1) NOT NULL DEFAULT 0,
+      FOREIGN KEY (followup_id) REFERENCES customer_followups(id) ON DELETE CASCADE,
+      KEY idx_fr_followup (followup_id),
+      KEY idx_fr_remind_at (remind_at)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS workflow_rules (
+      id VARCHAR(255) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      trigger_event VARCHAR(100) NOT NULL,
+      conditions JSON,
+      action_type VARCHAR(100) NOT NULL DEFAULT 'create_followup',
+      action_config JSON NOT NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      priority_order INT NOT NULL DEFAULT 10,
+      created_by VARCHAR(255),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_wr_trigger (trigger_event),
+      KEY idx_wr_active (is_active)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS escalation_policies (
+      id VARCHAR(255) PRIMARY KEY,
+      category_id VARCHAR(100),
+      name VARCHAR(255) NOT NULL,
+      overdue_hours_l1 INT NOT NULL DEFAULT 4,
+      overdue_hours_l2 INT NOT NULL DEFAULT 12,
+      overdue_hours_l3 INT NOT NULL DEFAULT 24,
+      is_active TINYINT(1) NOT NULL DEFAULT 1
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS escalation_log (
+      id VARCHAR(255) PRIMARY KEY,
+      followup_id VARCHAR(255) NOT NULL,
+      from_agent_id VARCHAR(255),
+      to_agent_id VARCHAR(255),
+      escalation_level INT NOT NULL,
+      reason VARCHAR(255),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (followup_id) REFERENCES customer_followups(id) ON DELETE CASCADE,
+      KEY idx_el_followup (followup_id),
+      KEY idx_el_created (created_at)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS workflow_audit_log (
+      id VARCHAR(255) PRIMARY KEY,
+      followup_id VARCHAR(255) NOT NULL,
+      agent_id VARCHAR(255),
+      action VARCHAR(100) NOT NULL,
+      old_status VARCHAR(50),
+      new_status VARCHAR(50),
+      notes TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_wal_followup (followup_id),
+      KEY idx_wal_created (created_at)
     )
   `);
 
@@ -868,7 +1140,50 @@ async function migrateExistingColumns() {
       await pool.query(`ALTER TABLE tickets ADD COLUMN ${col} ${type}`);
     }
   }
+  // ── IFWAE: customer_followups — migrate old table to new schema ──────────────
+  // The old table only had: id, customer_id, assigned_agent_id, due_date, reason
+  // CREATE TABLE IF NOT EXISTS silently skipped it; we must ALTER instead.
+  const [fupCols] = await pool.query(
+    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'customer_followups'"
+  );
+  const existingFupCols = fupCols.map((c) => c.COLUMN_NAME);
+  const newFupCols = [
+    ["brand_id",                 "VARCHAR(255)"],
+    ["category_id",              "VARCHAR(100)"],
+    ["created_by_agent_id",      "VARCHAR(255)"],
+    ["related_order_id",         "VARCHAR(255)"],
+    ["related_ticket_id",        "VARCHAR(255)"],
+    ["related_opportunity_id",   "VARCHAR(255)"],
+    ["title",                    "VARCHAR(500) NOT NULL DEFAULT 'Follow-up'"],
+    ["description",              "TEXT"],
+    ["priority",                 "VARCHAR(20) NOT NULL DEFAULT 'medium'"],
+    ["priority_score",           "INT NOT NULL DEFAULT 50"],
+    ["status",                   "VARCHAR(50) NOT NULL DEFAULT 'scheduled'"],
+    ["due_at",                   "DATETIME"],
+    ["reminder_at",              "DATETIME"],
+    ["outcome",                  "VARCHAR(100)"],
+    ["outcome_notes",            "TEXT"],
+    ["reschedule_reason",        "TEXT"],
+    ["escalation_level",         "INT NOT NULL DEFAULT 0"],
+    ["source",                   "VARCHAR(100) NOT NULL DEFAULT 'manual'"],
+    ["completed_at",             "DATETIME"],
+    ["updated_at",               "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"],
+  ];
+  for (const [col, type] of newFupCols) {
+    if (!existingFupCols.includes(col)) {
+      await pool.query(`ALTER TABLE customer_followups ADD COLUMN ${col} ${type}`);
+    }
+  }
+  // Backfill due_at from old due_date column if it exists and due_at is empty
+  if (existingFupCols.includes("due_date") && !existingFupCols.includes("due_at")) {
+    await pool.query("UPDATE customer_followups SET due_at = due_date WHERE due_at IS NULL AND due_date IS NOT NULL").catch(() => {});
+  }
+  // Backfill title from old reason column if it exists
+  if (existingFupCols.includes("reason")) {
+    await pool.query("UPDATE customer_followups SET title = COALESCE(reason, 'Follow-up') WHERE title = 'Follow-up' OR title IS NULL").catch(() => {});
+  }
 }
+
 
 // ─── IAM Seed Defaults ─────────────────────────────────────────────────────
 
@@ -1041,24 +1356,24 @@ async function seedDefaults() {
   }
 
   // Clean up expired revoked tokens (housekeeping)
-  await pool.query(`DELETE FROM revoked_tokens WHERE expires_at < NOW()`).catch(() => {});
+  await pool.query(`DELETE FROM revoked_tokens WHERE expires_at < NOW()`).catch(() => { });
 
   // Seed CS Queue categories
   const csQueues = [
-    { id: "csq_ctwa",          name: "CTWA Leads",                category: "sales",    sla_minutes: 15,  priority_base: 1, icon: "MessageSquare", color: "#EF4444" },
-    { id: "csq_abandoned_cart",name: "Abandoned Cart",            category: "sales",    sla_minutes: 30,  priority_base: 1, icon: "ShoppingCart",  color: "#EF4444" },
-    { id: "csq_checkout_assist",name:"Checkout Assistance",       category: "sales",    sla_minutes: 60,  priority_base: 2, icon: "CreditCard",    color: "#F97316" },
-    { id: "csq_upsell",        name: "High Value Prospects",      category: "sales",    sla_minutes: 120, priority_base: 2, icon: "TrendingUp",    color: "#F97316" },
-    { id: "csq_delivered_fu",  name: "Delivered Order Follow-up", category: "success",  sla_minutes: 480, priority_base: 3, icon: "PackageCheck",  color: "#EAB308" },
-    { id: "csq_repeat_purchase",name:"Repeat Purchase Campaign",  category: "success",  sla_minutes: 1440,priority_base: 3, icon: "RefreshCw",     color: "#EAB308" },
-    { id: "csq_wellness",      name: "Wellness Follow-up",        category: "success",  sla_minutes: 1440,priority_base: 4, icon: "Heart",         color: "#22C55E" },
-    { id: "csq_complaints",    name: "Open Complaints",           category: "support",  sla_minutes: 60,  priority_base: 1, icon: "AlertTriangle", color: "#EF4444" },
-    { id: "csq_delivery_issue",name: "Delivery Issues",           category: "support",  sla_minutes: 120, priority_base: 2, icon: "Truck",         color: "#F97316" },
-    { id: "csq_refund",        name: "Refund Requests",           category: "support",  sla_minutes: 1440,priority_base: 2, icon: "RotateCcw",     color: "#F97316" },
-    { id: "csq_rto_recovery",  name: "RTO Recovery",              category: "operations",sla_minutes: 720, priority_base: 2, icon: "PackageX",      color: "#F97316" },
-    { id: "csq_address_verify",name: "Address Verification",      category: "operations",sla_minutes: 240, priority_base: 3, icon: "MapPin",        color: "#EAB308" },
-    { id: "csq_dormant",       name: "Dormant Customers",         category: "retention",sla_minutes: 4320,priority_base: 4, icon: "Users",         color: "#8B5CF6" },
-    { id: "csq_vip",           name: "VIP Customers",             category: "retention",sla_minutes: 60,  priority_base: 1, icon: "Star",          color: "#EF4444" },
+    { id: "csq_ctwa", name: "CTWA Leads", category: "sales", sla_minutes: 15, priority_base: 1, icon: "MessageSquare", color: "#EF4444" },
+    { id: "csq_abandoned_cart", name: "Abandoned Cart", category: "sales", sla_minutes: 30, priority_base: 1, icon: "ShoppingCart", color: "#EF4444" },
+    { id: "csq_checkout_assist", name: "Checkout Assistance", category: "sales", sla_minutes: 60, priority_base: 2, icon: "CreditCard", color: "#F97316" },
+    { id: "csq_upsell", name: "High Value Prospects", category: "sales", sla_minutes: 120, priority_base: 2, icon: "TrendingUp", color: "#F97316" },
+    { id: "csq_delivered_fu", name: "Delivered Order Follow-up", category: "success", sla_minutes: 480, priority_base: 3, icon: "PackageCheck", color: "#EAB308" },
+    { id: "csq_repeat_purchase", name: "Repeat Purchase Campaign", category: "success", sla_minutes: 1440, priority_base: 3, icon: "RefreshCw", color: "#EAB308" },
+    { id: "csq_wellness", name: "Wellness Follow-up", category: "success", sla_minutes: 1440, priority_base: 4, icon: "Heart", color: "#22C55E" },
+    { id: "csq_complaints", name: "Open Complaints", category: "support", sla_minutes: 60, priority_base: 1, icon: "AlertTriangle", color: "#EF4444" },
+    { id: "csq_delivery_issue", name: "Delivery Issues", category: "support", sla_minutes: 120, priority_base: 2, icon: "Truck", color: "#F97316" },
+    { id: "csq_refund", name: "Refund Requests", category: "support", sla_minutes: 1440, priority_base: 2, icon: "RotateCcw", color: "#F97316" },
+    { id: "csq_rto_recovery", name: "RTO Recovery", category: "operations", sla_minutes: 720, priority_base: 2, icon: "PackageX", color: "#F97316" },
+    { id: "csq_address_verify", name: "Address Verification", category: "operations", sla_minutes: 240, priority_base: 3, icon: "MapPin", color: "#EAB308" },
+    { id: "csq_dormant", name: "Dormant Customers", category: "retention", sla_minutes: 4320, priority_base: 4, icon: "Users", color: "#8B5CF6" },
+    { id: "csq_vip", name: "VIP Customers", category: "retention", sla_minutes: 60, priority_base: 1, icon: "Star", color: "#EF4444" },
   ];
   for (const q of csQueues) {
     await pool.query(
@@ -1069,20 +1384,177 @@ async function seedDefaults() {
 
   // Seed default opportunity pipeline stages
   const oppStages = [
-    { id: "stage_new_lead",       name: "New Lead",               sort_order: 1,  color: "#6B7280", is_won: 0, is_lost: 0 },
-    { id: "stage_contact_attempt",name: "Contact Attempted",      sort_order: 2,  color: "#3B82F6", is_won: 0, is_lost: 0 },
-    { id: "stage_connected",      name: "Connected",              sort_order: 3,  color: "#8B5CF6", is_won: 0, is_lost: 0 },
-    { id: "stage_interested",     name: "Interested",             sort_order: 4,  color: "#F59E0B", is_won: 0, is_lost: 0 },
-    { id: "stage_consultation",   name: "Product Consultation",   sort_order: 5,  color: "#F97316", is_won: 0, is_lost: 0 },
-    { id: "stage_payment_link",   name: "Payment Link Shared",    sort_order: 6,  color: "#EC4899", is_won: 0, is_lost: 0 },
-    { id: "stage_order_placed",   name: "Order Placed",           sort_order: 7,  color: "#10B981", is_won: 0, is_lost: 0 },
-    { id: "stage_won",            name: "Won",                    sort_order: 8,  color: "#16A34A", is_won: 1, is_lost: 0 },
-    { id: "stage_lost",           name: "Lost",                   sort_order: 9,  color: "#DC2626", is_won: 0, is_lost: 1 },
+    { id: "stage_new_lead", name: "New Lead", sort_order: 1, color: "#6B7280", is_won: 0, is_lost: 0 },
+    { id: "stage_contact_attempt", name: "Contact Attempted", sort_order: 2, color: "#3B82F6", is_won: 0, is_lost: 0 },
+    { id: "stage_connected", name: "Connected", sort_order: 3, color: "#8B5CF6", is_won: 0, is_lost: 0 },
+    { id: "stage_interested", name: "Interested", sort_order: 4, color: "#F59E0B", is_won: 0, is_lost: 0 },
+    { id: "stage_consultation", name: "Product Consultation", sort_order: 5, color: "#F97316", is_won: 0, is_lost: 0 },
+    { id: "stage_payment_link", name: "Payment Link Shared", sort_order: 6, color: "#EC4899", is_won: 0, is_lost: 0 },
+    { id: "stage_order_placed", name: "Order Placed", sort_order: 7, color: "#10B981", is_won: 0, is_lost: 0 },
+    { id: "stage_won", name: "Won", sort_order: 8, color: "#16A34A", is_won: 1, is_lost: 0 },
+    { id: "stage_lost", name: "Lost", sort_order: 9, color: "#DC2626", is_won: 0, is_lost: 1 },
   ];
   for (const s of oppStages) {
     await pool.query(
       `INSERT IGNORE INTO opportunity_stages (id, name, sort_order, color, is_won, is_lost) VALUES (?, ?, ?, ?, ?, ?)`,
       [s.id, s.name, s.sort_order, s.color, s.is_won, s.is_lost]
+    );
+  }
+
+  // Seed Timeline Event Types
+  const timelineEventTypes = [
+    // Customer events
+    { id: "customer_registered",    category: "customer",  label: "Customer Registered",       icon: "🆕", color: "#6D28D9" },
+    { id: "profile_updated",        category: "customer",  label: "Profile Updated",            icon: "✏️", color: "#7C3AED" },
+    { id: "address_updated",        category: "customer",  label: "Address Updated",            icon: "📍", color: "#7C3AED" },
+    // Order events
+    { id: "order_created",          category: "order",     label: "Order Created",              icon: "🛒", color: "#2563EB" },
+    { id: "payment_successful",     category: "order",     label: "Payment Successful",         icon: "💳", color: "#16A34A" },
+    { id: "payment_failed",         category: "order",     label: "Payment Failed",             icon: "❌", color: "#DC2626" },
+    { id: "order_confirmed",        category: "order",     label: "Order Confirmed",            icon: "✅", color: "#2563EB" },
+    { id: "order_shipped",          category: "order",     label: "Order Shipped",              icon: "📦", color: "#7C3AED" },
+    { id: "out_for_delivery",       category: "order",     label: "Out for Delivery",           icon: "🚚", color: "#D97706" },
+    { id: "delivered",              category: "order",     label: "Delivered",                  icon: "🎉", color: "#16A34A" },
+    { id: "order_cancelled",        category: "order",     label: "Order Cancelled",            icon: "🚫", color: "#DC2626" },
+    // Sales events
+    { id: "ctwa_submitted",         category: "sales",     label: "CTWA Submitted",             icon: "📲", color: "#059669" },
+    { id: "abandoned_cart",         category: "sales",     label: "Abandoned Cart",             icon: "🛍️", color: "#D97706" },
+    { id: "payment_link_sent",      category: "sales",     label: "Payment Link Sent",          icon: "🔗", color: "#059669" },
+    { id: "offer_shared",           category: "sales",     label: "Offer Shared",               icon: "🎁", color: "#059669" },
+    { id: "opportunity_created",    category: "sales",     label: "Opportunity Created",        icon: "💡", color: "#059669" },
+    { id: "stage_change",           category: "sales",     label: "Stage Changed",              icon: "➡️", color: "#0891B2" },
+    { id: "deal_won",               category: "sales",     label: "Deal Won",                   icon: "🏆", color: "#16A34A" },
+    { id: "deal_lost",              category: "sales",     label: "Deal Lost",                  icon: "😞", color: "#DC2626" },
+    // Call events
+    { id: "call_incoming",          category: "call",      label: "Incoming Call",              icon: "📞", color: "#2563EB" },
+    { id: "call_outgoing",          category: "call",      label: "Outgoing Call",              icon: "📲", color: "#0891B2" },
+    { id: "call_missed",            category: "call",      label: "Missed Call",                icon: "📵", color: "#DC2626" },
+    { id: "call_completed",         category: "call",      label: "Call Completed",             icon: "✅", color: "#0891B2" },
+    { id: "followup_scheduled",     category: "call",      label: "Follow-up Scheduled",        icon: "📅", color: "#7C3AED" },
+    // Support events
+    { id: "ticket_created",         category: "support",   label: "Ticket Created",             icon: "🎫", color: "#DC2626" },
+    { id: "ticket_assigned",        category: "support",   label: "Ticket Assigned",            icon: "👤", color: "#D97706" },
+    { id: "ticket_escalated",       category: "support",   label: "Ticket Escalated",           icon: "⚠️", color: "#DC2626" },
+    { id: "ticket_resolved",        category: "support",   label: "Ticket Resolved",            icon: "✅", color: "#16A34A" },
+    { id: "refund_requested",       category: "support",   label: "Refund Requested",           icon: "↩️", color: "#D97706" },
+    { id: "refund_approved",        category: "support",   label: "Refund Approved",            icon: "💚", color: "#16A34A" },
+    { id: "complaint_registered",   category: "support",   label: "Complaint Registered",       icon: "😤", color: "#DC2626" },
+    // Internal
+    { id: "internal_note",          category: "internal",  label: "Internal Note",              icon: "🔒", color: "#92400E" },
+  ];
+  for (const t of timelineEventTypes) {
+    await pool.query(
+      `INSERT IGNORE INTO timeline_event_types (id, category, label, icon, color) VALUES (?, ?, ?, ?, ?)`,
+      [t.id, t.category, t.label, t.icon, t.color]
+    );
+  }
+
+  // ── Seed Follow-up Categories ────────────────────────────────────────────────
+  const followupCats = [
+    // Sales
+    { id: "fcat_abandoned_cart",    name: "Abandoned Cart",         group_name: "sales",    default_priority: "high",   default_sla_hours: 4,   icon: "🛒", color: "#DC2626" },
+    { id: "fcat_ctwa_lead",         name: "CTWA Lead",              group_name: "sales",    default_priority: "high",   default_sla_hours: 1,   icon: "💬", color: "#DC2626" },
+    { id: "fcat_payment_pending",   name: "Payment Pending",        group_name: "sales",    default_priority: "high",   default_sla_hours: 2,   icon: "💳", color: "#F97316" },
+    { id: "fcat_consultation",      name: "Product Consultation",   group_name: "sales",    default_priority: "medium", default_sla_hours: 12,  icon: "🧪", color: "#7C3AED" },
+    { id: "fcat_offer_reminder",    name: "Offer Reminder",         group_name: "sales",    default_priority: "medium", default_sla_hours: 24,  icon: "🎁", color: "#059669" },
+    { id: "fcat_high_value_lead",   name: "High Value Lead",        group_name: "sales",    default_priority: "critical", default_sla_hours: 1, icon: "💎", color: "#DC2626" },
+    // Customer Success
+    { id: "fcat_delivered_fu",      name: "Delivered Order Follow-up", group_name: "success", default_priority: "medium", default_sla_hours: 48,  icon: "📦", color: "#059669" },
+    { id: "fcat_repeat_purchase",   name: "Repeat Purchase",        group_name: "success",  default_priority: "medium", default_sla_hours: 72,  icon: "🔄", color: "#059669" },
+    { id: "fcat_review_request",    name: "Review Request",         group_name: "success",  default_priority: "low",    default_sla_hours: 120, icon: "⭐", color: "#D97706" },
+    { id: "fcat_wellness_check",    name: "Wellness Check",         group_name: "success",  default_priority: "low",    default_sla_hours: 168, icon: "❤️", color: "#EC4899" },
+    { id: "fcat_subscription",      name: "Subscription Renewal",   group_name: "success",  default_priority: "high",   default_sla_hours: 24,  icon: "♻️", color: "#7C3AED" },
+    // Support
+    { id: "fcat_complaint",         name: "Complaint Follow-up",    group_name: "support",  default_priority: "high",   default_sla_hours: 8,   icon: "😤", color: "#DC2626" },
+    { id: "fcat_refund",            name: "Refund Status",          group_name: "support",  default_priority: "high",   default_sla_hours: 12,  icon: "↩️", color: "#DC2626" },
+    { id: "fcat_delivery_issue",    name: "Delivery Issue",         group_name: "support",  default_priority: "high",   default_sla_hours: 8,   icon: "🚚", color: "#F97316" },
+    { id: "fcat_ticket_pending",    name: "Ticket Pending",         group_name: "support",  default_priority: "medium", default_sla_hours: 24,  icon: "🎫", color: "#F97316" },
+    // Operations
+    { id: "fcat_rto_recovery",      name: "RTO Recovery",           group_name: "operations", default_priority: "high", default_sla_hours: 12,  icon: "📦", color: "#F97316" },
+    { id: "fcat_address_verify",    name: "Address Verification",   group_name: "operations", default_priority: "high", default_sla_hours: 4,   icon: "📍", color: "#D97706" },
+    { id: "fcat_payment_confirm",   name: "Payment Confirmation",   group_name: "operations", default_priority: "high", default_sla_hours: 2,   icon: "✅", color: "#059669" },
+    // Internal
+    { id: "fcat_manager_review",    name: "Manager Review",         group_name: "internal", default_priority: "medium", default_sla_hours: 24,  icon: "👔", color: "#6B7280" },
+    { id: "fcat_quality_audit",     name: "Quality Audit",          group_name: "internal", default_priority: "low",    default_sla_hours: 72,  icon: "🔍", color: "#6B7280" },
+  ];
+  for (const c of followupCats) {
+    await pool.query(
+      `INSERT IGNORE INTO followup_categories (id, name, group_name, default_priority, default_sla_hours, icon, color) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [c.id, c.name, c.group_name, c.default_priority, c.default_sla_hours, c.icon, c.color]
+    );
+  }
+
+  // ── Seed Default Escalation Policies ─────────────────────────────────────────
+  const escalationPolicies = [
+    { id: "esc_default",  category_id: null,              name: "Default Policy",      overdue_hours_l1: 4,  overdue_hours_l2: 12, overdue_hours_l3: 24 },
+    { id: "esc_critical", category_id: "fcat_ctwa_lead",  name: "CTWA Critical",       overdue_hours_l1: 1,  overdue_hours_l2: 3,  overdue_hours_l3: 8  },
+    { id: "esc_sales",    category_id: "fcat_abandoned_cart", name: "Abandoned Cart",  overdue_hours_l1: 2,  overdue_hours_l2: 6,  overdue_hours_l3: 12 },
+    { id: "esc_support",  category_id: "fcat_complaint",  name: "Complaint Policy",    overdue_hours_l1: 2,  overdue_hours_l2: 6,  overdue_hours_l3: 12 },
+    { id: "esc_refund",   category_id: "fcat_refund",     name: "Refund Policy",       overdue_hours_l1: 4,  overdue_hours_l2: 12, overdue_hours_l3: 24 },
+  ];
+  for (const p of escalationPolicies) {
+    await pool.query(
+      `INSERT IGNORE INTO escalation_policies (id, category_id, name, overdue_hours_l1, overdue_hours_l2, overdue_hours_l3) VALUES (?, ?, ?, ?, ?, ?)`,
+      [p.id, p.category_id, p.name, p.overdue_hours_l1, p.overdue_hours_l2, p.overdue_hours_l3]
+    );
+  }
+
+  // ── Seed Default Workflow Rules ───────────────────────────────────────────────
+  const defaultRules = [
+    {
+      id: "wr_cart_abandoned",
+      name: "Abandoned Cart → Immediate Follow-up",
+      trigger_event: "cart_abandoned",
+      conditions: null,
+      action_config: { category_id: "fcat_abandoned_cart", title: "Abandoned Cart Recovery", delay_hours: 0, priority: "high" },
+    },
+    {
+      id: "wr_cart_retry_24h",
+      name: "Abandoned Cart → 24h Retry",
+      trigger_event: "cart_abandoned",
+      conditions: null,
+      action_config: { category_id: "fcat_abandoned_cart", title: "Cart Recovery Retry (24h)", delay_hours: 24, priority: "medium" },
+    },
+    {
+      id: "wr_call_no_answer",
+      name: "No Answer → Retry Follow-up",
+      trigger_event: "call_no_answer",
+      conditions: null,
+      action_config: { category_id: "fcat_ctwa_lead", title: "Call Retry — No Answer", delay_hours: 2, priority: "high" },
+    },
+    {
+      id: "wr_ticket_complaint",
+      name: "Complaint Ticket → Daily Follow-up",
+      trigger_event: "ticket_created",
+      conditions: { priority: "high" },
+      action_config: { category_id: "fcat_complaint", title: "Complaint Follow-up", delay_hours: 4, priority: "high" },
+    },
+    {
+      id: "wr_order_delivered",
+      name: "Order Delivered → Repeat Purchase Follow-up",
+      trigger_event: "order_delivered",
+      conditions: null,
+      action_config: { category_id: "fcat_delivered_fu", title: "Post-Delivery Check-in", delay_hours: 48, priority: "medium" },
+    },
+    {
+      id: "wr_payment_link",
+      name: "Payment Link Sent → Payment Pending Follow-up",
+      trigger_event: "payment_link_sent",
+      conditions: null,
+      action_config: { category_id: "fcat_payment_pending", title: "Payment Pending Reminder", delay_hours: 2, priority: "high" },
+    },
+    {
+      id: "wr_opportunity_created",
+      name: "New Opportunity → Consultation Follow-up",
+      trigger_event: "opportunity_created",
+      conditions: null,
+      action_config: { category_id: "fcat_consultation", title: "Product Consultation Follow-up", delay_hours: 1, priority: "medium" },
+    },
+  ];
+  for (const r of defaultRules) {
+    await pool.query(
+      `INSERT IGNORE INTO workflow_rules (id, name, trigger_event, conditions, action_config, priority_order) VALUES (?, ?, ?, ?, ?, ?)`,
+      [r.id, r.name, r.trigger_event, r.conditions ? JSON.stringify(r.conditions) : null, JSON.stringify(r.action_config), 10]
     );
   }
 }

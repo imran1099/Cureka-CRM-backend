@@ -3,6 +3,8 @@ import { nanoid } from "nanoid";
 import { db } from "../db/connection.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
+import { getBrandCondition } from "../utils/dbHelpers.js";
+import { createFollowup } from "../services/followupService.js";
 
 const router = express.Router();
 router.use(requireAuth);
@@ -217,12 +219,14 @@ router.post("/tasks/:id/followup", async (req, res, next) => {
 
     if (!due_date) return res.status(400).json({ error: "due_date is required for follow-up" });
 
-    // Create a follow-up in customer_followups (for Call Queue)
-    const fupId = "fup_" + nanoid(10);
-    await db.run(
-      "INSERT INTO customer_followups (id, customer_id, assigned_agent_id, due_date, reason) VALUES (?, ?, ?, ?, ?)",
-      fupId, task.customer_id, agentId, due_date, reason || "Scheduled Follow-up"
-    );
+    // Create a follow-up in customer_followups (using IFWAE service)
+    await createFollowup({
+      customerId: task.customer_id, brandId: task.brand_id || null,
+      assignedAgentId: agentId, createdByAgentId: agentId,
+      title: reason || "Scheduled Follow-up",
+      dueAt: new Date(due_date).toISOString().slice(0, 19).replace("T", " "),
+      source: "cscc",
+    }).catch(() => {});
 
     // Create a new cs_task for the follow-up
     const newTaskId = "cst_" + nanoid(12);

@@ -4,6 +4,8 @@ import { db } from "../db/connection.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
 import { getBrandCondition } from "../utils/dbHelpers.js";
+import { createTimelineEvent } from "../services/timelineService.js";
+import { createFollowup, processWorkflowRules } from "../services/followupService.js";
 
 const router = express.Router();
 router.use(requireAuth);
@@ -107,27 +109,49 @@ router.post("/", requireBrandAccess, async (req, res, next) => {
 
     // Automation: Create follow-up if requested
     if (follow_up_date) {
-      const fid = "fup_" + nanoid(10);
-      await db.run(
-        "INSERT INTO customer_followups (id, customer_id, assigned_agent_id, due_date, reason) VALUES (?, ?, ?, ?, ?)",
-        fid, customer_id, agent_id, follow_up_date, follow_up_reason || "Scheduled Follow-up"
-      );
+      await createFollowup({
+        customerId: customer_id, brandId: brand_id || null,
+        categoryId: "fcat_ctwa_lead",
+        assignedAgentId: agent_id,
+        createdByAgentId: agent_id,
+        title: follow_up_reason || "Scheduled Follow-up",
+        dueAt: follow_up_date,
+        source: "call_log",
+      }).catch(() => {});
+      createTimelineEvent({
+        customerId: customer_id, brandId: brand_id || null,
+        eventType: "followup_scheduled",
+        eventTitle: `Follow-up scheduled for ${new Date(follow_up_date).toLocaleDateString()}`,
+        eventDescription: follow_up_reason || "Scheduled after call.",
+        agentId: agent_id, sourceSystem: "calls",
+        refId: id, refType: "call",
+      }).catch(() => {});
     }
 
-    // Automation: Update Customer Timeline
-    const tlId = "cte_" + nanoid(10);
-    await db.run(
-      "INSERT INTO customer_timeline_events (id, customer_id, event_type, description, agent_id) VALUES (?, ?, ?, ?, ?)",
-      tlId, customer_id, 'CALL_LOGGED', `Call outcome: ${outcome}. Remarks: ${remarks || ''}`, agent_id
-    );
+    // Workflow automation: no-answer triggers retry rule
+    if (outcome === "no_answer" || outcome === "missed") {
+      processWorkflowRules("call_no_answer", {
+        customerId: customer_id, brandId: brand_id || null,
+        assignedAgentId: agent_id,
+        relatedOrderId: order_id,
+      }).catch(() => {});
+    }
+
+    // Timeline event via new service (replaces old broken insert)
+    const callEventType = outcome === "no_answer" || outcome === "missed" ? "call_missed"
+      : call_type === "inbound" ? "call_incoming" : "call_outgoing";
+    createTimelineEvent({
+      customerId: customer_id, brandId: brand_id || null,
+      eventType: callEventType,
+      eventTitle: `${call_type === "inbound" ? "Incoming" : "Outgoing"} call — ${outcome}`,
+      eventDescription: remarks || null,
+      outcome, agentId: agent_id,
+      sourceSystem: "calls", refId: id, refType: "call",
+      metadata: { call_duration_seconds, sale_amount, call_category },
+    }).catch(() => {});
 
     // Automation: Clear any pending follow-ups for this customer if a call was made
     await db.run("UPDATE customer_followups SET status = 'completed', updated_at = NOW() WHERE customer_id = ? AND status = 'pending' AND due_date <= NOW()", customer_id);
-
-    // Sales Attribution
-    if (order_id) {
-      // Add logic here if we have a separate sales_attribution table, otherwise the call_logs order_id suffices
-    }
 
     res.status(201).json({ id });
   } catch (err) {

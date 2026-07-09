@@ -18,6 +18,9 @@ import ticketsRoutes from "./routes/tickets.js";
 import callsRoutes from "./routes/calls.js";
 import csccRoutes from "./routes/cscc.js";
 import creRoutes from "./routes/cre.js";
+import timelineRoutes from "./routes/timeline.js";
+import followupsRoutes from "./routes/followups.js";
+import { checkEscalations } from "./services/followupService.js";
 
 try {
   await initSchema();
@@ -48,6 +51,8 @@ app.use("/api/tickets", ticketsRoutes);
 app.use("/api/calls", callsRoutes);
 app.use("/api/cscc", csccRoutes);
 app.use("/api/cre", creRoutes);
+app.use("/api/timeline", timelineRoutes);
+app.use("/api/followups", followupsRoutes);
 
 // IAM routes
 app.use("/api/users", usersRoutes);
@@ -67,4 +72,10 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Cureka CRM server running on http://localhost:${PORT}`);
+  // Escalation engine: runs every 15 minutes
+  // Delay initial run by 5s to let DB migration complete first
+  setTimeout(() => {
+    checkEscalations();
+    setInterval(() => checkEscalations(), 15 * 60 * 1000);
+  }, 5000);
 });
