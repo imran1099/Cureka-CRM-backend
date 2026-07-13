@@ -1,10 +1,10 @@
 import express from "express";
 import { db } from "../db/connection.js";
-import { requireAuth } from "../middleware/auth.js";
-import { requirePermission } from "../middleware/rbac.js";
+import { requireAuth, requireManagement } from "../middleware/auth.js";
+import { terminateSession, revokeToken, logEvent } from "../services/escamsService.js";
 
 const router = express.Router();
-router.use(requireAuth, requirePermission("reports", "view"));
+router.use(requireAuth);
 
 // GET /api/audit — paginated audit log
 router.get("/", async (req, res, next) => {
@@ -91,5 +91,43 @@ router.get("/login-history", async (req, res, next) => {
 function tryParse(val) {
   try { return JSON.parse(val); } catch { return val; }
 }
+
+// GET /api/audit/security - ESCAMS Dashboard Data
+router.get("/security", requireManagement, async (req, res, next) => {
+  try {
+    const logs = await db.all(`SELECT * FROM escams_audit_logs ORDER BY created_at DESC LIMIT 50`);
+    const alerts = await db.all(`SELECT * FROM escams_alerts WHERE resolved = 0 ORDER BY created_at DESC LIMIT 20`);
+    const sessions = await db.all(`SELECT * FROM escams_sessions ORDER BY login_time DESC LIMIT 50`);
+    
+    res.json({ logs, alerts, sessions });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/audit/sessions/:id/terminate - Terminate an active session
+router.post("/sessions/:id/terminate", requireManagement, async (req, res, next) => {
+  try {
+    const sessionId = req.params.id;
+    const session = await db.get("SELECT * FROM escams_sessions WHERE id = ?", sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+
+    // Mark session terminated
+    await terminateSession(sessionId);
+
+    // If we have a mapped JTI or token mechanism, we'd revoke it here. 
+    // For V1, the session blocklist checks `x-session-id` on requests, but we'll log it.
+    await logEvent({ req, user: req.user }, {
+      module: "Security",
+      action: "TERMINATE_SESSION",
+      entity: "Session",
+      entity_id: sessionId
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;

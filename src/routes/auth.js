@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { nanoid } from "nanoid";
 import { db, pool, writeAuditLog, createNotification } from "../db/connection.js";
 import { signToken, requireAuth, getRequestMeta } from "../middleware/auth.js";
+import { logEvent, trackSession, terminateSession, revokeToken, triggerSecurityAlert } from "../services/escamsService.js";
 
 const router = express.Router();
 
@@ -17,36 +18,41 @@ router.post("/login", async (req, res, next) => {
 
     const agent = await db.get("SELECT * FROM agents WHERE email = ?", trimmedEmail);
 
-    // Log helper
-    const logEvent = async (agentId, eventType) => {
+    const logAuthEvent = async (agentId, eventType) => {
       await db.run(
         "INSERT INTO login_history (id, agent_id, event_type, email_attempted, ip, browser) VALUES (?, ?, ?, ?, ?, ?)",
         "lh_" + nanoid(12), agentId || null, eventType, trimmedEmail, ip, device.substring(0, 500)
       );
+      
+      // ESCAMS Logging
+      await logEvent(
+        { req, user: { id: agentId, email: trimmedEmail } },
+        { module: 'Authentication', action: eventType.toUpperCase(), entity: 'User', entity_id: agentId, status: eventType === 'login' ? 'SUCCESS' : 'FAILURE' }
+      );
     };
 
     if (!agent) {
-      await logEvent(null, "failed");
+      await logAuthEvent(null, "failed");
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
     // Check if account is suspended/resigned/inactive
     const blockedStatuses = ["suspended", "resigned", "inactive"];
     if (blockedStatuses.includes(agent.employment_status)) {
-      await logEvent(agent.id, "blocked");
+      await logAuthEvent(agent.id, "blocked");
       return res.status(403).json({ error: "Account is not active. Please contact your administrator." });
     }
 
     // Check active flag
     if (!agent.active) {
-      await logEvent(agent.id, "blocked");
+      await logAuthEvent(agent.id, "blocked");
       return res.status(401).json({ error: "Account is disabled" });
     }
 
     // Check brute-force lock
     if (agent.locked_until && new Date(agent.locked_until) > new Date()) {
       const remaining = Math.ceil((new Date(agent.locked_until) - new Date()) / 60000);
-      await logEvent(agent.id, "locked_attempt");
+      await logAuthEvent(agent.id, "locked_attempt");
       return res.status(429).json({
         error: `Account is locked due to multiple failed attempts. Try again in ${remaining} minute(s).`,
       });
@@ -63,9 +69,10 @@ router.post("/login", async (req, res, next) => {
         "UPDATE agents SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
         attempts, lockUntil, agent.id
       );
-      await logEvent(agent.id, shouldLock ? "locked" : "failed");
+      await logAuthEvent(agent.id, shouldLock ? "locked" : "failed");
 
       if (shouldLock) {
+        triggerSecurityAlert('ACCOUNT_LOCKED', 'HIGH', `Account ${trimmedEmail} locked after 5 failed attempts.`);
         await createNotification({
           recipientId: agent.id,
           type: "security",
@@ -118,7 +125,11 @@ router.post("/login", async (req, res, next) => {
       "sess_" + nanoid(12), agent.id, jti, ip, device.substring(0, 500)
     );
 
-    await logEvent(agent.id, "login");
+    // ESCAMS Session
+    const escamsSessionId = await trackSession(agent, req);
+    const token = signToken({ ...agent, jti }); // Generate token
+
+    await logAuthEvent(agent.id, "login");
 
     await writeAuditLog({
       userId: agent.id,
@@ -129,10 +140,9 @@ router.post("/login", async (req, res, next) => {
       device,
     });
 
-    const token = signToken({ ...agent, jti });
-
     res.json({
       token,
+      sessionId: escamsSessionId,
       user: {
         id: agent.id,
         name: agent.name,
@@ -169,12 +179,24 @@ router.post("/logout", requireAuth, async (req, res, next) => {
         jti, req.user.id, exp
       );
     }
+    
+    // ESCAMS
+    const token = req.headers.authorization ? req.headers.authorization.slice(7) : null;
+    if (token) await revokeToken(token, "User Logout", req.user.id);
+    if (req.headers['x-session-id']) await terminateSession(req.headers['x-session-id']);
 
     // Log history
     await db.run(
       "INSERT INTO login_history (id, agent_id, event_type, email_attempted, ip, browser) VALUES (?, ?, ?, ?, ?, ?)",
       "lh_" + nanoid(12), req.user.id, "logout", req.user.email, ip, device.substring(0, 500)
     );
+
+    await logEvent({ req, user: req.user }, {
+      module: 'Authentication',
+      action: 'LOGOUT',
+      entity: 'User',
+      entity_id: req.user.id
+    });
 
     await writeAuditLog({ userId: req.user.id, action: "LOGOUT", entityType: "user", entityId: req.user.id, ip, device });
 

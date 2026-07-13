@@ -3,7 +3,8 @@ import { nanoid } from "nanoid";
 
 const connectionUri = process.env.DATABASE_URL
   ? process.env.DATABASE_URL.replace(/^mysql\+pymysql:\/\//, "mysql://")
-  : "mysql://root:root@localhost:3306/cureka_crm_db";
+  : "mysql://root:root@localhost:3306/cureka_crms";
+// : "mysql://root:root@localhost:3306/cureka_crm_db";
 // : "mysql://root:ioYkajsDqbcsbxCwIKLyLSIRyeLguYvg@hayabusa.proxy.rlwy.net:25408/cureka_crm_db";
 
 export const pool = mysql.createPool({
@@ -1148,26 +1149,26 @@ async function migrateExistingColumns() {
   );
   const existingFupCols = fupCols.map((c) => c.COLUMN_NAME);
   const newFupCols = [
-    ["brand_id",                 "VARCHAR(255)"],
-    ["category_id",              "VARCHAR(100)"],
-    ["created_by_agent_id",      "VARCHAR(255)"],
-    ["related_order_id",         "VARCHAR(255)"],
-    ["related_ticket_id",        "VARCHAR(255)"],
-    ["related_opportunity_id",   "VARCHAR(255)"],
-    ["title",                    "VARCHAR(500) NOT NULL DEFAULT 'Follow-up'"],
-    ["description",              "TEXT"],
-    ["priority",                 "VARCHAR(20) NOT NULL DEFAULT 'medium'"],
-    ["priority_score",           "INT NOT NULL DEFAULT 50"],
-    ["status",                   "VARCHAR(50) NOT NULL DEFAULT 'scheduled'"],
-    ["due_at",                   "DATETIME"],
-    ["reminder_at",              "DATETIME"],
-    ["outcome",                  "VARCHAR(100)"],
-    ["outcome_notes",            "TEXT"],
-    ["reschedule_reason",        "TEXT"],
-    ["escalation_level",         "INT NOT NULL DEFAULT 0"],
-    ["source",                   "VARCHAR(100) NOT NULL DEFAULT 'manual'"],
-    ["completed_at",             "DATETIME"],
-    ["updated_at",               "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"],
+    ["brand_id", "VARCHAR(255)"],
+    ["category_id", "VARCHAR(100)"],
+    ["created_by_agent_id", "VARCHAR(255)"],
+    ["related_order_id", "VARCHAR(255)"],
+    ["related_ticket_id", "VARCHAR(255)"],
+    ["related_opportunity_id", "VARCHAR(255)"],
+    ["title", "VARCHAR(500) NOT NULL DEFAULT 'Follow-up'"],
+    ["description", "TEXT"],
+    ["priority", "VARCHAR(20) NOT NULL DEFAULT 'medium'"],
+    ["priority_score", "INT NOT NULL DEFAULT 50"],
+    ["status", "VARCHAR(50) NOT NULL DEFAULT 'scheduled'"],
+    ["due_at", "DATETIME"],
+    ["reminder_at", "DATETIME"],
+    ["outcome", "VARCHAR(100)"],
+    ["outcome_notes", "TEXT"],
+    ["reschedule_reason", "TEXT"],
+    ["escalation_level", "INT NOT NULL DEFAULT 0"],
+    ["source", "VARCHAR(100) NOT NULL DEFAULT 'manual'"],
+    ["completed_at", "DATETIME"],
+    ["updated_at", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"],
   ];
   for (const [col, type] of newFupCols) {
     if (!existingFupCols.includes(col)) {
@@ -1176,11 +1177,11 @@ async function migrateExistingColumns() {
   }
   // Backfill due_at from old due_date column if it exists and due_at is empty
   if (existingFupCols.includes("due_date") && !existingFupCols.includes("due_at")) {
-    await pool.query("UPDATE customer_followups SET due_at = due_date WHERE due_at IS NULL AND due_date IS NOT NULL").catch(() => {});
+    await pool.query("UPDATE customer_followups SET due_at = due_date WHERE due_at IS NULL AND due_date IS NOT NULL").catch(() => { });
   }
   // Backfill title from old reason column if it exists
   if (existingFupCols.includes("reason")) {
-    await pool.query("UPDATE customer_followups SET title = COALESCE(reason, 'Follow-up') WHERE title = 'Follow-up' OR title IS NULL").catch(() => {});
+    await pool.query("UPDATE customer_followups SET title = COALESCE(reason, 'Follow-up') WHERE title = 'Follow-up' OR title IS NULL").catch(() => { });
   }
 }
 
@@ -1404,43 +1405,43 @@ async function seedDefaults() {
   // Seed Timeline Event Types
   const timelineEventTypes = [
     // Customer events
-    { id: "customer_registered",    category: "customer",  label: "Customer Registered",       icon: "🆕", color: "#6D28D9" },
-    { id: "profile_updated",        category: "customer",  label: "Profile Updated",            icon: "✏️", color: "#7C3AED" },
-    { id: "address_updated",        category: "customer",  label: "Address Updated",            icon: "📍", color: "#7C3AED" },
+    { id: "customer_registered", category: "customer", label: "Customer Registered", icon: "🆕", color: "#6D28D9" },
+    { id: "profile_updated", category: "customer", label: "Profile Updated", icon: "✏️", color: "#7C3AED" },
+    { id: "address_updated", category: "customer", label: "Address Updated", icon: "📍", color: "#7C3AED" },
     // Order events
-    { id: "order_created",          category: "order",     label: "Order Created",              icon: "🛒", color: "#2563EB" },
-    { id: "payment_successful",     category: "order",     label: "Payment Successful",         icon: "💳", color: "#16A34A" },
-    { id: "payment_failed",         category: "order",     label: "Payment Failed",             icon: "❌", color: "#DC2626" },
-    { id: "order_confirmed",        category: "order",     label: "Order Confirmed",            icon: "✅", color: "#2563EB" },
-    { id: "order_shipped",          category: "order",     label: "Order Shipped",              icon: "📦", color: "#7C3AED" },
-    { id: "out_for_delivery",       category: "order",     label: "Out for Delivery",           icon: "🚚", color: "#D97706" },
-    { id: "delivered",              category: "order",     label: "Delivered",                  icon: "🎉", color: "#16A34A" },
-    { id: "order_cancelled",        category: "order",     label: "Order Cancelled",            icon: "🚫", color: "#DC2626" },
+    { id: "order_created", category: "order", label: "Order Created", icon: "🛒", color: "#2563EB" },
+    { id: "payment_successful", category: "order", label: "Payment Successful", icon: "💳", color: "#16A34A" },
+    { id: "payment_failed", category: "order", label: "Payment Failed", icon: "❌", color: "#DC2626" },
+    { id: "order_confirmed", category: "order", label: "Order Confirmed", icon: "✅", color: "#2563EB" },
+    { id: "order_shipped", category: "order", label: "Order Shipped", icon: "📦", color: "#7C3AED" },
+    { id: "out_for_delivery", category: "order", label: "Out for Delivery", icon: "🚚", color: "#D97706" },
+    { id: "delivered", category: "order", label: "Delivered", icon: "🎉", color: "#16A34A" },
+    { id: "order_cancelled", category: "order", label: "Order Cancelled", icon: "🚫", color: "#DC2626" },
     // Sales events
-    { id: "ctwa_submitted",         category: "sales",     label: "CTWA Submitted",             icon: "📲", color: "#059669" },
-    { id: "abandoned_cart",         category: "sales",     label: "Abandoned Cart",             icon: "🛍️", color: "#D97706" },
-    { id: "payment_link_sent",      category: "sales",     label: "Payment Link Sent",          icon: "🔗", color: "#059669" },
-    { id: "offer_shared",           category: "sales",     label: "Offer Shared",               icon: "🎁", color: "#059669" },
-    { id: "opportunity_created",    category: "sales",     label: "Opportunity Created",        icon: "💡", color: "#059669" },
-    { id: "stage_change",           category: "sales",     label: "Stage Changed",              icon: "➡️", color: "#0891B2" },
-    { id: "deal_won",               category: "sales",     label: "Deal Won",                   icon: "🏆", color: "#16A34A" },
-    { id: "deal_lost",              category: "sales",     label: "Deal Lost",                  icon: "😞", color: "#DC2626" },
+    { id: "ctwa_submitted", category: "sales", label: "CTWA Submitted", icon: "📲", color: "#059669" },
+    { id: "abandoned_cart", category: "sales", label: "Abandoned Cart", icon: "🛍️", color: "#D97706" },
+    { id: "payment_link_sent", category: "sales", label: "Payment Link Sent", icon: "🔗", color: "#059669" },
+    { id: "offer_shared", category: "sales", label: "Offer Shared", icon: "🎁", color: "#059669" },
+    { id: "opportunity_created", category: "sales", label: "Opportunity Created", icon: "💡", color: "#059669" },
+    { id: "stage_change", category: "sales", label: "Stage Changed", icon: "➡️", color: "#0891B2" },
+    { id: "deal_won", category: "sales", label: "Deal Won", icon: "🏆", color: "#16A34A" },
+    { id: "deal_lost", category: "sales", label: "Deal Lost", icon: "😞", color: "#DC2626" },
     // Call events
-    { id: "call_incoming",          category: "call",      label: "Incoming Call",              icon: "📞", color: "#2563EB" },
-    { id: "call_outgoing",          category: "call",      label: "Outgoing Call",              icon: "📲", color: "#0891B2" },
-    { id: "call_missed",            category: "call",      label: "Missed Call",                icon: "📵", color: "#DC2626" },
-    { id: "call_completed",         category: "call",      label: "Call Completed",             icon: "✅", color: "#0891B2" },
-    { id: "followup_scheduled",     category: "call",      label: "Follow-up Scheduled",        icon: "📅", color: "#7C3AED" },
+    { id: "call_incoming", category: "call", label: "Incoming Call", icon: "📞", color: "#2563EB" },
+    { id: "call_outgoing", category: "call", label: "Outgoing Call", icon: "📲", color: "#0891B2" },
+    { id: "call_missed", category: "call", label: "Missed Call", icon: "📵", color: "#DC2626" },
+    { id: "call_completed", category: "call", label: "Call Completed", icon: "✅", color: "#0891B2" },
+    { id: "followup_scheduled", category: "call", label: "Follow-up Scheduled", icon: "📅", color: "#7C3AED" },
     // Support events
-    { id: "ticket_created",         category: "support",   label: "Ticket Created",             icon: "🎫", color: "#DC2626" },
-    { id: "ticket_assigned",        category: "support",   label: "Ticket Assigned",            icon: "👤", color: "#D97706" },
-    { id: "ticket_escalated",       category: "support",   label: "Ticket Escalated",           icon: "⚠️", color: "#DC2626" },
-    { id: "ticket_resolved",        category: "support",   label: "Ticket Resolved",            icon: "✅", color: "#16A34A" },
-    { id: "refund_requested",       category: "support",   label: "Refund Requested",           icon: "↩️", color: "#D97706" },
-    { id: "refund_approved",        category: "support",   label: "Refund Approved",            icon: "💚", color: "#16A34A" },
-    { id: "complaint_registered",   category: "support",   label: "Complaint Registered",       icon: "😤", color: "#DC2626" },
+    { id: "ticket_created", category: "support", label: "Ticket Created", icon: "🎫", color: "#DC2626" },
+    { id: "ticket_assigned", category: "support", label: "Ticket Assigned", icon: "👤", color: "#D97706" },
+    { id: "ticket_escalated", category: "support", label: "Ticket Escalated", icon: "⚠️", color: "#DC2626" },
+    { id: "ticket_resolved", category: "support", label: "Ticket Resolved", icon: "✅", color: "#16A34A" },
+    { id: "refund_requested", category: "support", label: "Refund Requested", icon: "↩️", color: "#D97706" },
+    { id: "refund_approved", category: "support", label: "Refund Approved", icon: "💚", color: "#16A34A" },
+    { id: "complaint_registered", category: "support", label: "Complaint Registered", icon: "😤", color: "#DC2626" },
     // Internal
-    { id: "internal_note",          category: "internal",  label: "Internal Note",              icon: "🔒", color: "#92400E" },
+    { id: "internal_note", category: "internal", label: "Internal Note", icon: "🔒", color: "#92400E" },
   ];
   for (const t of timelineEventTypes) {
     await pool.query(
@@ -1452,30 +1453,30 @@ async function seedDefaults() {
   // ── Seed Follow-up Categories ────────────────────────────────────────────────
   const followupCats = [
     // Sales
-    { id: "fcat_abandoned_cart",    name: "Abandoned Cart",         group_name: "sales",    default_priority: "high",   default_sla_hours: 4,   icon: "🛒", color: "#DC2626" },
-    { id: "fcat_ctwa_lead",         name: "CTWA Lead",              group_name: "sales",    default_priority: "high",   default_sla_hours: 1,   icon: "💬", color: "#DC2626" },
-    { id: "fcat_payment_pending",   name: "Payment Pending",        group_name: "sales",    default_priority: "high",   default_sla_hours: 2,   icon: "💳", color: "#F97316" },
-    { id: "fcat_consultation",      name: "Product Consultation",   group_name: "sales",    default_priority: "medium", default_sla_hours: 12,  icon: "🧪", color: "#7C3AED" },
-    { id: "fcat_offer_reminder",    name: "Offer Reminder",         group_name: "sales",    default_priority: "medium", default_sla_hours: 24,  icon: "🎁", color: "#059669" },
-    { id: "fcat_high_value_lead",   name: "High Value Lead",        group_name: "sales",    default_priority: "critical", default_sla_hours: 1, icon: "💎", color: "#DC2626" },
+    { id: "fcat_abandoned_cart", name: "Abandoned Cart", group_name: "sales", default_priority: "high", default_sla_hours: 4, icon: "🛒", color: "#DC2626" },
+    { id: "fcat_ctwa_lead", name: "CTWA Lead", group_name: "sales", default_priority: "high", default_sla_hours: 1, icon: "💬", color: "#DC2626" },
+    { id: "fcat_payment_pending", name: "Payment Pending", group_name: "sales", default_priority: "high", default_sla_hours: 2, icon: "💳", color: "#F97316" },
+    { id: "fcat_consultation", name: "Product Consultation", group_name: "sales", default_priority: "medium", default_sla_hours: 12, icon: "🧪", color: "#7C3AED" },
+    { id: "fcat_offer_reminder", name: "Offer Reminder", group_name: "sales", default_priority: "medium", default_sla_hours: 24, icon: "🎁", color: "#059669" },
+    { id: "fcat_high_value_lead", name: "High Value Lead", group_name: "sales", default_priority: "critical", default_sla_hours: 1, icon: "💎", color: "#DC2626" },
     // Customer Success
-    { id: "fcat_delivered_fu",      name: "Delivered Order Follow-up", group_name: "success", default_priority: "medium", default_sla_hours: 48,  icon: "📦", color: "#059669" },
-    { id: "fcat_repeat_purchase",   name: "Repeat Purchase",        group_name: "success",  default_priority: "medium", default_sla_hours: 72,  icon: "🔄", color: "#059669" },
-    { id: "fcat_review_request",    name: "Review Request",         group_name: "success",  default_priority: "low",    default_sla_hours: 120, icon: "⭐", color: "#D97706" },
-    { id: "fcat_wellness_check",    name: "Wellness Check",         group_name: "success",  default_priority: "low",    default_sla_hours: 168, icon: "❤️", color: "#EC4899" },
-    { id: "fcat_subscription",      name: "Subscription Renewal",   group_name: "success",  default_priority: "high",   default_sla_hours: 24,  icon: "♻️", color: "#7C3AED" },
+    { id: "fcat_delivered_fu", name: "Delivered Order Follow-up", group_name: "success", default_priority: "medium", default_sla_hours: 48, icon: "📦", color: "#059669" },
+    { id: "fcat_repeat_purchase", name: "Repeat Purchase", group_name: "success", default_priority: "medium", default_sla_hours: 72, icon: "🔄", color: "#059669" },
+    { id: "fcat_review_request", name: "Review Request", group_name: "success", default_priority: "low", default_sla_hours: 120, icon: "⭐", color: "#D97706" },
+    { id: "fcat_wellness_check", name: "Wellness Check", group_name: "success", default_priority: "low", default_sla_hours: 168, icon: "❤️", color: "#EC4899" },
+    { id: "fcat_subscription", name: "Subscription Renewal", group_name: "success", default_priority: "high", default_sla_hours: 24, icon: "♻️", color: "#7C3AED" },
     // Support
-    { id: "fcat_complaint",         name: "Complaint Follow-up",    group_name: "support",  default_priority: "high",   default_sla_hours: 8,   icon: "😤", color: "#DC2626" },
-    { id: "fcat_refund",            name: "Refund Status",          group_name: "support",  default_priority: "high",   default_sla_hours: 12,  icon: "↩️", color: "#DC2626" },
-    { id: "fcat_delivery_issue",    name: "Delivery Issue",         group_name: "support",  default_priority: "high",   default_sla_hours: 8,   icon: "🚚", color: "#F97316" },
-    { id: "fcat_ticket_pending",    name: "Ticket Pending",         group_name: "support",  default_priority: "medium", default_sla_hours: 24,  icon: "🎫", color: "#F97316" },
+    { id: "fcat_complaint", name: "Complaint Follow-up", group_name: "support", default_priority: "high", default_sla_hours: 8, icon: "😤", color: "#DC2626" },
+    { id: "fcat_refund", name: "Refund Status", group_name: "support", default_priority: "high", default_sla_hours: 12, icon: "↩️", color: "#DC2626" },
+    { id: "fcat_delivery_issue", name: "Delivery Issue", group_name: "support", default_priority: "high", default_sla_hours: 8, icon: "🚚", color: "#F97316" },
+    { id: "fcat_ticket_pending", name: "Ticket Pending", group_name: "support", default_priority: "medium", default_sla_hours: 24, icon: "🎫", color: "#F97316" },
     // Operations
-    { id: "fcat_rto_recovery",      name: "RTO Recovery",           group_name: "operations", default_priority: "high", default_sla_hours: 12,  icon: "📦", color: "#F97316" },
-    { id: "fcat_address_verify",    name: "Address Verification",   group_name: "operations", default_priority: "high", default_sla_hours: 4,   icon: "📍", color: "#D97706" },
-    { id: "fcat_payment_confirm",   name: "Payment Confirmation",   group_name: "operations", default_priority: "high", default_sla_hours: 2,   icon: "✅", color: "#059669" },
+    { id: "fcat_rto_recovery", name: "RTO Recovery", group_name: "operations", default_priority: "high", default_sla_hours: 12, icon: "📦", color: "#F97316" },
+    { id: "fcat_address_verify", name: "Address Verification", group_name: "operations", default_priority: "high", default_sla_hours: 4, icon: "📍", color: "#D97706" },
+    { id: "fcat_payment_confirm", name: "Payment Confirmation", group_name: "operations", default_priority: "high", default_sla_hours: 2, icon: "✅", color: "#059669" },
     // Internal
-    { id: "fcat_manager_review",    name: "Manager Review",         group_name: "internal", default_priority: "medium", default_sla_hours: 24,  icon: "👔", color: "#6B7280" },
-    { id: "fcat_quality_audit",     name: "Quality Audit",          group_name: "internal", default_priority: "low",    default_sla_hours: 72,  icon: "🔍", color: "#6B7280" },
+    { id: "fcat_manager_review", name: "Manager Review", group_name: "internal", default_priority: "medium", default_sla_hours: 24, icon: "👔", color: "#6B7280" },
+    { id: "fcat_quality_audit", name: "Quality Audit", group_name: "internal", default_priority: "low", default_sla_hours: 72, icon: "🔍", color: "#6B7280" },
   ];
   for (const c of followupCats) {
     await pool.query(
@@ -1486,11 +1487,11 @@ async function seedDefaults() {
 
   // ── Seed Default Escalation Policies ─────────────────────────────────────────
   const escalationPolicies = [
-    { id: "esc_default",  category_id: null,              name: "Default Policy",      overdue_hours_l1: 4,  overdue_hours_l2: 12, overdue_hours_l3: 24 },
-    { id: "esc_critical", category_id: "fcat_ctwa_lead",  name: "CTWA Critical",       overdue_hours_l1: 1,  overdue_hours_l2: 3,  overdue_hours_l3: 8  },
-    { id: "esc_sales",    category_id: "fcat_abandoned_cart", name: "Abandoned Cart",  overdue_hours_l1: 2,  overdue_hours_l2: 6,  overdue_hours_l3: 12 },
-    { id: "esc_support",  category_id: "fcat_complaint",  name: "Complaint Policy",    overdue_hours_l1: 2,  overdue_hours_l2: 6,  overdue_hours_l3: 12 },
-    { id: "esc_refund",   category_id: "fcat_refund",     name: "Refund Policy",       overdue_hours_l1: 4,  overdue_hours_l2: 12, overdue_hours_l3: 24 },
+    { id: "esc_default", category_id: null, name: "Default Policy", overdue_hours_l1: 4, overdue_hours_l2: 12, overdue_hours_l3: 24 },
+    { id: "esc_critical", category_id: "fcat_ctwa_lead", name: "CTWA Critical", overdue_hours_l1: 1, overdue_hours_l2: 3, overdue_hours_l3: 8 },
+    { id: "esc_sales", category_id: "fcat_abandoned_cart", name: "Abandoned Cart", overdue_hours_l1: 2, overdue_hours_l2: 6, overdue_hours_l3: 12 },
+    { id: "esc_support", category_id: "fcat_complaint", name: "Complaint Policy", overdue_hours_l1: 2, overdue_hours_l2: 6, overdue_hours_l3: 12 },
+    { id: "esc_refund", category_id: "fcat_refund", name: "Refund Policy", overdue_hours_l1: 4, overdue_hours_l2: 12, overdue_hours_l3: 24 },
   ];
   for (const p of escalationPolicies) {
     await pool.query(
@@ -1588,4 +1589,659 @@ export async function createNotification({ recipientId, type, title, body, link 
     `INSERT INTO notifications (id, recipient_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?)`,
     [id, recipientId, type, title, body || null, link || null]
   );
+}
+
+// ─── Shopify Integration Schema ─────────────────────────────────────────────
+export async function initShopifySchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_stores (
+      id VARCHAR(255) PRIMARY KEY,
+      brand_id VARCHAR(255) NOT NULL,
+      store_url VARCHAR(255) NOT NULL,
+      access_token VARCHAR(255) NOT NULL,
+      webhook_secret VARCHAR(255),
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      last_sync_at DATETIME,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_customers (
+      id VARCHAR(255) PRIMARY KEY,
+      crm_customer_id VARCHAR(255) NOT NULL,
+      brand_id VARCHAR(255) NOT NULL,
+      email VARCHAR(255),
+      phone VARCHAR(255),
+      state VARCHAR(50),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (crm_customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE,
+      KEY idx_shopify_cust_crm (crm_customer_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_orders (
+      id VARCHAR(255) PRIMARY KEY,
+      crm_customer_id VARCHAR(255) NOT NULL,
+      brand_id VARCHAR(255) NOT NULL,
+      order_number VARCHAR(100) NOT NULL,
+      total_price DOUBLE,
+      currency VARCHAR(10),
+      financial_status VARCHAR(50),
+      fulfillment_status VARCHAR(50),
+      tags TEXT,
+      created_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL,
+      FOREIGN KEY (crm_customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_order_items (
+      id VARCHAR(255) PRIMARY KEY,
+      order_id VARCHAR(255) NOT NULL,
+      product_id VARCHAR(255),
+      variant_id VARCHAR(255),
+      sku VARCHAR(255),
+      name TEXT,
+      quantity INT,
+      price DOUBLE,
+      FOREIGN KEY (order_id) REFERENCES shopify_orders(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_products (
+      id VARCHAR(255) PRIMARY KEY,
+      brand_id VARCHAR(255) NOT NULL,
+      title TEXT NOT NULL,
+      handle VARCHAR(255),
+      status VARCHAR(50),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_variants (
+      id VARCHAR(255) PRIMARY KEY,
+      product_id VARCHAR(255) NOT NULL,
+      sku VARCHAR(255),
+      price DOUBLE,
+      compare_at_price DOUBLE,
+      inventory_quantity INT,
+      FOREIGN KEY (product_id) REFERENCES shopify_products(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_sync_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      store_id VARCHAR(255) NOT NULL,
+      entity_type VARCHAR(100) NOT NULL,
+      status VARCHAR(50) NOT NULL,
+      records_processed INT DEFAULT 0,
+      records_failed INT DEFAULT 0,
+      error_message TEXT,
+      started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME,
+      FOREIGN KEY (store_id) REFERENCES shopify_stores(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS shopify_event_queue (
+      id VARCHAR(255) PRIMARY KEY,
+      store_id VARCHAR(255) NOT NULL,
+      topic VARCHAR(100) NOT NULL,
+      payload MEDIUMTEXT NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'pending',
+      retry_count INT DEFAULT 0,
+      error_message TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      processed_at DATETIME,
+      FOREIGN KEY (store_id) REFERENCES shopify_stores(id) ON DELETE CASCADE,
+      KEY idx_shopify_eq_status (status)
+    )
+  `);
+
+  // Add missing columns if they don't exist
+  try {
+    const [shopCols] = await pool.query(
+      "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shopify_stores'"
+    );
+    const existingShopCols = shopCols.map((c) => c.COLUMN_NAME);
+    
+    if (!existingShopCols.includes('last_sync_at')) {
+      await pool.query(`ALTER TABLE shopify_stores ADD COLUMN last_sync_at DATETIME`);
+    }
+  } catch (err) {
+    console.error("Error updating shopify_stores table:", err);
+  }
+}
+
+export async function initKnowledgeSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS eklh_categories (
+      id VARCHAR(255) PRIMARY KEY,
+      parent_id VARCHAR(255) DEFAULT NULL,
+      brand_id VARCHAR(255) DEFAULT NULL,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL,
+      FOREIGN KEY (parent_id) REFERENCES eklh_categories(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS eklh_articles (
+      id VARCHAR(255) PRIMARY KEY,
+      category_id VARCHAR(255) NOT NULL,
+      brand_id VARCHAR(255) DEFAULT NULL,
+      department VARCHAR(100) DEFAULT NULL,
+      title VARCHAR(255) NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'draft',
+      author_id VARCHAR(255) NOT NULL,
+      reviewer_id VARCHAR(255) DEFAULT NULL,
+      effective_date DATETIME DEFAULT NULL,
+      summary TEXT,
+      views INT DEFAULT 0,
+      rating_score FLOAT DEFAULT 0,
+      rating_count INT DEFAULT 0,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (category_id) REFERENCES eklh_categories(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL,
+      FOREIGN KEY (author_id) REFERENCES agents(id) ON DELETE CASCADE,
+      FOREIGN KEY (reviewer_id) REFERENCES agents(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS eklh_article_versions (
+      id VARCHAR(255) PRIMARY KEY,
+      article_id VARCHAR(255) NOT NULL,
+      version_num INT NOT NULL,
+      content MEDIUMTEXT NOT NULL,
+      created_by VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (article_id) REFERENCES eklh_articles(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES agents(id) ON DELETE CASCADE,
+      UNIQUE KEY unique_version (article_id, version_num)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS eklh_article_tags (
+      article_id VARCHAR(255) NOT NULL,
+      tag VARCHAR(100) NOT NULL,
+      PRIMARY KEY (article_id, tag),
+      FOREIGN KEY (article_id) REFERENCES eklh_articles(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS eklh_learning_progress (
+      user_id VARCHAR(255) NOT NULL,
+      article_id VARCHAR(255) NOT NULL,
+      completed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, article_id),
+      FOREIGN KEY (user_id) REFERENCES agents(id) ON DELETE CASCADE,
+      FOREIGN KEY (article_id) REFERENCES eklh_articles(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+export async function initBISchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bi_dashboards (
+      id VARCHAR(255) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      role_type VARCHAR(50) NOT NULL,
+      brand_id VARCHAR(255) DEFAULT NULL,
+      is_default BOOLEAN DEFAULT false,
+      layout_config JSON,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bi_widgets (
+      id VARCHAR(255) PRIMARY KEY,
+      dashboard_id VARCHAR(255) NOT NULL,
+      kpi_id VARCHAR(100) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      type VARCHAR(50) NOT NULL,
+      grid_w INT DEFAULT 1,
+      grid_h INT DEFAULT 1,
+      grid_x INT DEFAULT 0,
+      grid_y INT DEFAULT 0,
+      config JSON,
+      FOREIGN KEY (dashboard_id) REFERENCES bi_dashboards(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Seed default dashboards if they don't exist
+  const count = await db.get("SELECT COUNT(*) as c FROM bi_dashboards");
+  if (count.c === 0) {
+    const execDashId = "dash_exec_01";
+    await pool.query(
+      "INSERT INTO bi_dashboards (id, name, role_type, is_default) VALUES (?, ?, ?, ?)",
+      [execDashId, "Executive Overview", "admin", true]
+    );
+
+    // Seed some standard Executive widgets
+    const execWidgets = [
+      ["wid_01", execDashId, "revenue_today", "Today's Revenue", "kpi_card", 1, 1, 0, 0],
+      ["wid_02", execDashId, "orders_today", "Orders Today", "kpi_card", 1, 1, 1, 0],
+      ["wid_03", execDashId, "csat_score", "Customer Satisfaction", "kpi_card", 1, 1, 2, 0],
+      ["wid_04", execDashId, "open_cases", "Open Cases", "kpi_card", 1, 1, 3, 0],
+      ["wid_05", execDashId, "revenue_trend", "Revenue Trend (Last 7 Days)", "line_chart", 2, 2, 0, 1],
+      ["wid_06", execDashId, "revenue_by_brand", "Revenue by Brand", "pie_chart", 1, 2, 2, 1],
+      ["wid_07", execDashId, "agent_leaderboard", "Agent Leaderboard", "leaderboard", 1, 2, 3, 1]
+    ];
+
+    for (const w of execWidgets) {
+      await pool.query(
+        "INSERT INTO bi_widgets (id, dashboard_id, kpi_id, title, type, grid_w, grid_h, grid_x, grid_y) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        w
+      );
+    }
+
+    const cseDashId = "dash_cse_01";
+    await pool.query(
+      "INSERT INTO bi_dashboards (id, name, role_type, is_default) VALUES (?, ?, ?, ?)",
+      [cseDashId, "Agent Workspace", "agent", true]
+    );
+
+    const cseWidgets = [
+      ["wid_11", cseDashId, "my_calls_assigned", "Calls Assigned", "kpi_card", 1, 1, 0, 0],
+      ["wid_12", cseDashId, "my_calls_completed", "Calls Completed", "kpi_card", 1, 1, 1, 0],
+      ["wid_13", cseDashId, "my_revenue", "My Revenue", "kpi_card", 1, 1, 2, 0],
+      ["wid_14", cseDashId, "my_open_cases", "My Open Cases", "kpi_card", 1, 1, 3, 0],
+      ["wid_15", cseDashId, "my_quick_actions", "Quick Actions", "action_panel", 4, 1, 0, 1]
+    ];
+
+    for (const w of cseWidgets) {
+      await pool.query(
+        "INSERT INTO bi_widgets (id, dashboard_id, kpi_id, title, type, grid_w, grid_h, grid_x, grid_y) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        w
+      );
+    }
+  }
+}
+
+export async function initRADIPSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS radip_reports (
+      id VARCHAR(255) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      type VARCHAR(50) NOT NULL,
+      category VARCHAR(100) NOT NULL,
+      query_config JSON,
+      owner_id VARCHAR(255),
+      brand_id VARCHAR(255),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (owner_id) REFERENCES agents(id) ON DELETE SET NULL,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS radip_report_schedules (
+      id VARCHAR(255) PRIMARY KEY,
+      report_id VARCHAR(255) NOT NULL,
+      frequency VARCHAR(50) NOT NULL,
+      format VARCHAR(20) NOT NULL DEFAULT 'csv',
+      recipients JSON NOT NULL,
+      created_by VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (report_id) REFERENCES radip_reports(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS radip_kpi_history (
+      id VARCHAR(255) PRIMARY KEY,
+      date DATE NOT NULL,
+      brand_id VARCHAR(255),
+      kpi_key VARCHAR(100) NOT NULL,
+      value DECIMAL(15,2) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS radip_export_history (
+      id VARCHAR(255) PRIMARY KEY,
+      report_id VARCHAR(255) NOT NULL,
+      format VARCHAR(20) NOT NULL,
+      exported_by VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (exported_by) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
+
+  const count = await db.get("SELECT COUNT(*) as c FROM radip_reports WHERE type = 'standard'");
+  if (count.c === 0) {
+    const stdReports = [
+      ["std_01", "Revenue by Brand", "Breakdown of revenue across all brands.", "standard", "Executive", "{}"],
+      ["std_02", "Agent Leaderboard", "Performance ranking of all agents by calls and revenue.", "standard", "Employee Performance", "{}"],
+      ["std_03", "Open vs Closed Cases", "Historical comparison of case resolution.", "standard", "Customer Support", "{}"],
+      ["std_04", "Sales Pipeline Report", "Overview of current sales opportunities and stages.", "standard", "Sales", "{}"],
+      ["std_05", "Customer Lifetime Value", "Historical LTV analysis across brands.", "standard", "Customer Analytics", "{}"],
+      ["std_06", "Abandoned Cart Recovery", "Recovery rates and generated revenue from abandoned carts.", "standard", "Customer Success", "{}"]
+    ];
+
+    for (const r of stdReports) {
+      await pool.query(
+        "INSERT INTO radip_reports (id, name, description, type, category, query_config) VALUES (?, ?, ?, ?, ?, ?)",
+        r
+      );
+    }
+  }
+}
+
+export async function initPIKFSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pikf_kpi_definitions (
+      id VARCHAR(255) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      default_weight DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+      metric_type VARCHAR(50) NOT NULL, -- e.g., 'currency', 'percentage', 'count'
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pikf_targets (
+      id VARCHAR(255) PRIMARY KEY,
+      kpi_id VARCHAR(255) NOT NULL,
+      target_type VARCHAR(50) NOT NULL, -- 'individual', 'team', 'department', 'brand'
+      target_entity_id VARCHAR(255) NOT NULL, -- agent_id, team_id, etc.
+      period VARCHAR(50) NOT NULL, -- 'daily', 'weekly', 'monthly'
+      target_value DECIMAL(15,2) NOT NULL,
+      created_by VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (kpi_id) REFERENCES pikf_kpi_definitions(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pikf_performance_scores (
+      id VARCHAR(255) PRIMARY KEY,
+      agent_id VARCHAR(255) NOT NULL,
+      date DATE NOT NULL,
+      score DECIMAL(5,2) NOT NULL, -- 0 to 100
+      breakdown JSON, -- Detailed breakdown of how the score was calculated based on weights
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pikf_badges (
+      id VARCHAR(255) PRIMARY KEY,
+      agent_id VARCHAR(255) NOT NULL,
+      badge_name VARCHAR(255) NOT NULL,
+      badge_type VARCHAR(50) NOT NULL, -- 'auto', 'manual'
+      awarded_by VARCHAR(255), -- NULL if 'auto'
+      reason TEXT,
+      awarded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+      FOREIGN KEY (awarded_by) REFERENCES agents(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pikf_coaching_plans (
+      id VARCHAR(255) PRIMARY KEY,
+      agent_id VARCHAR(255) NOT NULL,
+      manager_id VARCHAR(255) NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'active', -- 'active', 'completed'
+      reason TEXT NOT NULL,
+      action_items TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+      FOREIGN KEY (manager_id) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Seed standard KPIs with default weights
+  const count = await db.get("SELECT COUNT(*) as c FROM pikf_kpi_definitions");
+  if (count.c === 0) {
+    const defaultKPIs = [
+      ["kpi_revenue", "Revenue Achievement", "Total revenue generated vs target", 25.00, "currency"],
+      ["kpi_conversion", "Conversion Rate", "Percentage of successful calls/opportunities", 15.00, "percentage"],
+      ["kpi_csat", "Customer Satisfaction", "Average CSAT score from tickets", 15.00, "percentage"],
+      ["kpi_followup", "Follow-up Compliance", "Percentage of follow-ups completed on time", 10.00, "percentage"],
+      ["kpi_sla", "SLA Compliance", "Percentage of tickets resolved within SLA", 10.00, "percentage"],
+      ["kpi_productivity", "Productivity", "Volume of tasks and calls completed", 10.00, "count"],
+      ["kpi_quality", "Quality Score", "Manual QA score for interactions", 10.00, "percentage"],
+      ["kpi_attendance", "Attendance", "Days present vs scheduled", 5.00, "percentage"]
+    ];
+
+    for (const kpi of defaultKPIs) {
+      await pool.query(
+        "INSERT INTO pikf_kpi_definitions (id, name, description, default_weight, metric_type) VALUES (?, ?, ?, ?, ?)",
+        kpi
+      );
+    }
+  }
+}
+
+export async function initBAWOESchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bawoe_workflows (
+      id VARCHAR(255) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      trigger_event VARCHAR(100) NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'draft',
+      brand_id VARCHAR(255),
+      definition JSON NOT NULL,
+      version INT DEFAULT 1,
+      created_by VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bawoe_executions (
+      id VARCHAR(255) PRIMARY KEY,
+      workflow_id VARCHAR(255) NOT NULL,
+      trigger_payload JSON,
+      status VARCHAR(50) NOT NULL DEFAULT 'running',
+      started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at DATETIME,
+      FOREIGN KEY (workflow_id) REFERENCES bawoe_workflows(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bawoe_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      execution_id VARCHAR(255) NOT NULL,
+      node_id VARCHAR(100) NOT NULL,
+      status VARCHAR(50) NOT NULL,
+      output_data JSON,
+      error_message TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (execution_id) REFERENCES bawoe_executions(id) ON DELETE CASCADE
+    )
+  `);
+
+  const count = await db.get("SELECT COUNT(*) as c FROM bawoe_workflows");
+  if (count.c === 0) {
+    const defaultDefinition = {
+      nodes: [
+        { id: "1", type: "trigger", data: { event: "order_delivered" } },
+        { id: "2", type: "condition", data: { field: "brand_id", operator: "==", value: "brd_cureka" } },
+        { id: "3", type: "action", data: { action: "CREATE_FOLLOWUP", payload: { reason: "Post-Purchase Check-in", priority: "normal", days: 7 } } }
+      ],
+      edges: [
+        { id: "e1-2", source: "1", target: "2" },
+        { id: "e2-3", source: "2", target: "3", sourceHandle: "true" }
+      ]
+    };
+
+    const admin = await db.get("SELECT id FROM agents WHERE role = 'admin' LIMIT 1");
+    if (admin) {
+      await pool.query(
+        "INSERT INTO bawoe_workflows (id, name, description, trigger_event, status, brand_id, definition, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          "wf_01",
+          "Post-Purchase Check-in (Cureka)",
+          "Automatically schedules a follow-up call 7 days after delivery.",
+          "order_delivered",
+          "active",
+          null,
+          JSON.stringify(defaultDefinition),
+          admin.id
+        ]
+      );
+    }
+  }
+}
+
+export async function initUNCCSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS uncc_notifications (
+      id VARCHAR(255) PRIMARY KEY,
+      assigned_to VARCHAR(255) NOT NULL, -- User ID
+      brand_id VARCHAR(255),
+      category VARCHAR(100) NOT NULL, -- 'Customer', 'Sales', 'Support', 'Operations', 'Workflow', 'Performance', 'System'
+      priority VARCHAR(20) NOT NULL, -- 'Critical', 'High', 'Medium', 'Low'
+      message TEXT NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'unread', -- 'unread', 'read', 'completed', 'archived'
+      action_type VARCHAR(100), -- E.g., 'APPROVE_REFUND', 'CALL_CUSTOMER'
+      context_data JSON, -- Stores IDs like order_id, ticket_id, customer_id
+      created_by VARCHAR(255), -- System or User ID
+      due_at DATETIME,
+      read_at DATETIME,
+      completed_at DATETIME,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (assigned_to) REFERENCES agents(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Seed default notifications for testing
+  const count = await db.get("SELECT COUNT(*) as c FROM uncc_notifications");
+  if (count.c === 0) {
+    const admin = await db.get("SELECT id FROM agents WHERE role = 'admin' LIMIT 1");
+    if (admin) {
+      await pool.query(
+        "INSERT INTO uncc_notifications (id, assigned_to, category, priority, message, status, action_type, context_data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+          `notif_${Date.now()}_1`,
+          admin.id,
+          'Sales',
+          'High',
+          '10 Abandoned Carts require follow-up',
+          'unread',
+          'VIEW_CARTS',
+          JSON.stringify({ group_count: 10, brand_id: 'brd_cureka' })
+        ]
+      );
+
+      await pool.query(
+        "INSERT INTO uncc_notifications (id, assigned_to, category, priority, message, status, action_type, context_data, due_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 2 HOUR))",
+        [
+          `notif_${Date.now()}_2`,
+          admin.id,
+          'Operations',
+          'Critical',
+          'Refund Approval Pending for Order #1042',
+          'unread',
+          'APPROVE_REFUND',
+          JSON.stringify({ order_id: 'ord_1042', customer_id: 'cust_01' })
+        ]
+      );
+    }
+  }
+}
+
+export async function initESCAMSSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS escams_audit_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      user_id VARCHAR(255),
+      user_name VARCHAR(255),
+      role VARCHAR(50),
+      brand_id VARCHAR(255),
+      module VARCHAR(100) NOT NULL,
+      action VARCHAR(100) NOT NULL,
+      entity VARCHAR(100),
+      entity_id VARCHAR(255),
+      old_value JSON,
+      new_value JSON,
+      ip_address VARCHAR(100),
+      device VARCHAR(255),
+      browser VARCHAR(255),
+      session_id VARCHAR(255),
+      status VARCHAR(20) DEFAULT 'SUCCESS',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES agents(id) ON DELETE SET NULL,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS escams_sessions (
+      id VARCHAR(255) PRIMARY KEY,
+      user_id VARCHAR(255) NOT NULL,
+      login_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_activity DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      ip_address VARCHAR(100),
+      device VARCHAR(255),
+      browser VARCHAR(255),
+      status VARCHAR(50) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, TERMINATED, EXPIRED
+      terminated_at DATETIME,
+      FOREIGN KEY (user_id) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS escams_alerts (
+      id VARCHAR(255) PRIMARY KEY,
+      type VARCHAR(100) NOT NULL,
+      severity VARCHAR(20) NOT NULL, -- CRITICAL, HIGH, MEDIUM, LOW
+      message TEXT NOT NULL,
+      resolved TINYINT(1) DEFAULT 0,
+      resolved_by VARCHAR(255),
+      resolved_at DATETIME,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (resolved_by) REFERENCES agents(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS escams_revoked_tokens (
+      token VARCHAR(500) PRIMARY KEY,
+      revoked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      reason VARCHAR(255),
+      user_id VARCHAR(255),
+      FOREIGN KEY (user_id) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
 }

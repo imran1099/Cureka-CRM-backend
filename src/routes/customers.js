@@ -200,7 +200,22 @@ router.get("/:id", requireBrandAccess, async (req, res, next) => {
     // Also get all brand links for this customer
     const brandLinks = await db.all("SELECT b.name as brand_name, cb.* FROM customer_brands cb JOIN brands b ON cb.brand_id = b.id WHERE cb.customer_id = ?", req.params.id);
 
-    res.json({ customer: { ...withParsedFields(customer), score, reason, brandLinks }, purchases, calls, tags });
+    // Shopify Integration Data
+    const shopifyProfiles = await db.all("SELECT * FROM shopify_customers WHERE crm_customer_id = ?", req.params.id);
+    const shopifyOrders = await db.all("SELECT * FROM shopify_orders WHERE crm_customer_id = ? ORDER BY created_at DESC", req.params.id);
+    
+    // Compute Shopify LTV
+    let shopifyLTV = 0;
+    shopifyOrders.forEach(o => {
+       if (o.financial_status === 'paid') shopifyLTV += parseFloat(o.total_price || 0);
+    });
+
+    res.json({ 
+      customer: { ...withParsedFields(customer), score, reason, brandLinks, shopifyProfiles, shopifyOrders, shopifyLTV }, 
+      purchases, 
+      calls, 
+      tags 
+    });
   } catch (err) {
     next(err);
   }

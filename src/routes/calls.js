@@ -163,7 +163,7 @@ router.post("/", requireBrandAccess, async (req, res, next) => {
 // Dashboards
 router.get("/analytics", requireBrandAccess, async (req, res, next) => {
   try {
-    const brandFilter = getBrandCondition(req, "call_logs");
+    const brandFilter = getBrandCondition(req, "cl");
     const params = brandFilter.params || (brandFilter.param ? [brandFilter.param] : []);
 
     // Agent Stats

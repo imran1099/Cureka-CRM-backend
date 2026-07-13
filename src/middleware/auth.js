@@ -29,7 +29,7 @@ export function signToken(agent) {
   );
 }
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: "Missing auth token" });
@@ -38,8 +38,14 @@ export function requireAuth(req, res, next) {
     const payload = jwt.verify(token, JWT_SECRET);
     req.user = payload;
 
-    // Async: check blocklist + update session activity (non-blocking)
-    checkBlocklistAndSession(payload, req).catch(() => {});
+    // Check blocklist synchronously for ESCAMS compliance
+    const revoked = await db.get("SELECT token FROM escams_revoked_tokens WHERE token = ?", token);
+    if (revoked) return res.status(401).json({ error: "Session has been terminated" });
+
+    // Async: update session activity (non-blocking)
+    if (req.headers['x-session-id']) {
+      db.run("UPDATE escams_sessions SET last_activity = CURRENT_TIMESTAMP WHERE id = ?", req.headers['x-session-id']).catch(() => {});
+    }
 
     next();
   } catch (e) {
@@ -48,41 +54,7 @@ export function requireAuth(req, res, next) {
 }
 
 export function requireAuthStrict(req, res, next) {
-  const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-  if (!token) return res.status(401).json({ error: "Missing auth token" });
-
-  jwt.verify(token, JWT_SECRET, async (err, payload) => {
-    if (err) return res.status(401).json({ error: "Invalid or expired token" });
-
-    // Strict: check blocklist synchronously
-    try {
-      if (payload.jti) {
-        const revoked = await db.get("SELECT jti FROM revoked_tokens WHERE jti = ?", payload.jti);
-        if (revoked) return res.status(401).json({ error: "Session has been terminated" });
-      }
-      req.user = payload;
-      // Update session activity
-      if (payload.jti) {
-        await pool.query(
-          "UPDATE sessions SET last_activity_at = NOW() WHERE jti = ? AND is_active = 1",
-          [payload.jti]
-        ).catch(() => {});
-      }
-      next();
-    } catch (e) {
-      next(e);
-    }
-  });
-}
-
-async function checkBlocklistAndSession(payload, req) {
-  if (!payload.jti) return;
-  // Update last activity on active sessions
-  await pool.query(
-    "UPDATE sessions SET last_activity_at = NOW() WHERE jti = ? AND is_active = 1",
-    [payload.jti]
-  ).catch(() => {});
+  requireAuth(req, res, next);
 }
 
 export function requireAdmin(req, res, next) {

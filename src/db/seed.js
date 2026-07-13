@@ -167,6 +167,103 @@ async function runSeed() {
     );
   }
 
+  // Create sample follow-ups
+  const sampleFollowups = [
+    { idx: 1, agentEmail: "sneha@cureka.com", hoursAhead: 48, reason: "Check glucose monitor readings", status: "pending" },
+    { idx: 4, agentEmail: "priyanka@healthetc.com", hoursAhead: -2, reason: "Replenishment reminder", status: "pending" }
+  ];
+
+  for (const f of sampleFollowups) {
+    const custId = customerIds[f.idx];
+    if (!custId) continue;
+    await db.run(
+      `INSERT INTO customer_followups (id, customer_id, assigned_agent_id, due_date, reason, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      "fol_" + nanoid(10), custId, agentIds[f.agentEmail], hoursAgoMySQL(-f.hoursAhead), f.reason, f.status
+    );
+  }
+
+  // Create sample timeline events
+  const sampleTimeline = [
+    { idx: 0, agentEmail: "priyanka@healthetc.com", type: "call", desc: "Outbound call - Sold", hoursAgo: 26 },
+    { idx: 1, agentEmail: "sneha@cureka.com", type: "ticket", desc: "Ticket opened regarding billing", hoursAgo: 48 }
+  ];
+  
+  for (const t of sampleTimeline) {
+    const custId = customerIds[t.idx];
+    if (!custId) continue;
+    await db.run(
+      `INSERT INTO customer_timeline (id, customer_id, event_type, event_title, event_description, created_at, agent_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      "evt_" + nanoid(10), custId, t.type, t.desc, t.desc, hoursAgoMySQL(t.hoursAgo), agentIds[t.agentEmail]
+    );
+  }
+
+  // Create sample UNCC notifications
+  if (agentIds["admin@cureka.com"]) {
+    await db.run(
+      "INSERT INTO uncc_notifications (id, assigned_to, category, priority, message, status, action_type, context_data, due_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 2 HOUR))",
+      ...[
+        `notif_${Date.now()}_1`,
+        agentIds["admin@cureka.com"],
+        'Sales',
+        'High',
+        '10 Abandoned Carts in last 1 hour',
+        'unread',
+        'VIEW_ABANDONED_CARTS',
+        JSON.stringify({ filter: 'last_1_hour' })
+      ]
+    );
+  }
+
+  // Create sample Shopify stores and customers
+  await db.run(
+    `INSERT INTO shopify_stores (id, brand_id, store_url, access_token, is_active, last_sync_at) 
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    "store_" + nanoid(10), brandIds["CU"], "cureka-demo.myshopify.com", "shpat_dummy", 1, hoursAgoMySQL(2)
+  );
+
+  const shopifyCustId = customerIds[1]; // Vikram
+  if (shopifyCustId) {
+    await db.run(
+      `INSERT INTO shopify_customers (id, crm_customer_id, brand_id, email, phone) 
+       VALUES (?, ?, ?, ?, ?)`,
+      "shpcust_" + nanoid(10), shopifyCustId, brandIds["CU"], "vikram@example.com", "9855500012"
+    );
+  }
+
+  // Create a sample Workflow Rule
+  await db.run(
+    `INSERT INTO bawoe_workflows (id, name, description, trigger_event, status, version, definition, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    "wf_" + nanoid(10), "VIP Escalation", "Escalate if LTV > 10000 and ticket is open > 24h", "ticket_created", "published", 1, JSON.stringify({ nodes: [], edges: [] }), agentIds["admin@cureka.com"] || "admin"
+  );
+
+  // ESCAMS Seed Data
+  console.log("Seeding ESCAMS Audit and Alerts...");
+  const adminId = agentIds["admin@cureka.com"];
+  
+  if (adminId) {
+    // 1. Audit Log 
+    await db.run(
+      `INSERT INTO escams_audit_logs (id, user_id, user_name, role, module, action, entity, entity_id, ip_address, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      "adt_" + nanoid(12), adminId, "Super Admin", "super_admin", "Settings", "UPDATE_CONFIG", "System", "global", "192.168.1.5", "SUCCESS"
+    );
+
+    // 2. Active Session
+    await db.run(
+      `INSERT INTO escams_sessions (id, user_id, ip_address, device, browser, status) VALUES (?, ?, ?, ?, ?, ?)`,
+      "sess_" + nanoid(12), adminId, "192.168.1.5", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Chrome/114", "ACTIVE"
+    );
+
+    // 3. Security Alert
+    await db.run(
+      `INSERT INTO escams_alerts (id, type, severity, message) VALUES (?, ?, ?, ?)`,
+      "alt_" + nanoid(12), "UNAUTHORIZED_LOGIN", "HIGH", "Multiple failed login attempts detected for ops@cureka.com from unknown IP"
+    );
+  }
+
   console.log("Seed complete.");
   console.log("\nLogin credentials:");
   for (const a of agents) console.log(`  ${a.role.padEnd(16)} ${a.email}  /  ${a.password}`);
