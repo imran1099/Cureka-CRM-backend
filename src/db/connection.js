@@ -3,9 +3,9 @@ import { nanoid } from "nanoid";
 
 const connectionUri = process.env.DATABASE_URL
   ? process.env.DATABASE_URL.replace(/^mysql\+pymysql:\/\//, "mysql://")
-  : "mysql://root:root@localhost:3306/cureka_crms";
-// : "mysql://root:root@localhost:3306/cureka_crm_db";
-// : "mysql://root:ioYkajsDqbcsbxCwIKLyLSIRyeLguYvg@hayabusa.proxy.rlwy.net:25408/cureka_crm_db";
+  // : "mysql://root:root@localhost:3306/cureka_crm";
+  // : "mysql://root:root@localhost:3306/cureka_crm_db";
+  : "mysql://root:ioYkajsDqbcsbxCwIKLyLSIRyeLguYvg@hayabusa.proxy.rlwy.net:25408/cureka_crm_db";
 
 export const pool = mysql.createPool({
   uri: connectionUri,
@@ -1718,7 +1718,7 @@ export async function initShopifySchema() {
       "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shopify_stores'"
     );
     const existingShopCols = shopCols.map((c) => c.COLUMN_NAME);
-    
+
     if (!existingShopCols.includes('last_sync_at')) {
       await pool.query(`ALTER TABLE shopify_stores ADD COLUMN last_sync_at DATETIME`);
     }
