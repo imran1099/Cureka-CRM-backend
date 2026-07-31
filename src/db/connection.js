@@ -3,9 +3,9 @@ import { nanoid } from "nanoid";
 
 const connectionUri = process.env.DATABASE_URL
   ? process.env.DATABASE_URL.replace(/^mysql\+pymysql:\/\//, "mysql://")
-  // : "mysql://root:root@localhost:3306/cureka_crm";
-  // : "mysql://root:root@localhost:3306/cureka_crm_db";
-  : "mysql://root:ioYkajsDqbcsbxCwIKLyLSIRyeLguYvg@hayabusa.proxy.rlwy.net:25408/cureka_crm_db";
+  : "mysql://root:root@localhost:3306/cureka_crm";
+// : "mysql://root:root@localhost:3306/cureka_crm_db";
+// : "mysql://root:ioYkajsDqbcsbxCwIKLyLSIRyeLguYvg@hayabusa.proxy.rlwy.net:25408/cureka_crm_db";
 
 export const pool = mysql.createPool({
   uri: connectionUri,
@@ -2242,6 +2242,134 @@ export async function initESCAMSSchema() {
       reason VARCHAR(255),
       user_id VARCHAR(255),
       FOREIGN KEY (user_id) REFERENCES agents(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+export async function initBoBSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_accounts (
+      id VARCHAR(255) PRIMARY KEY,
+      brand_id VARCHAR(255),
+      store_url VARCHAR(255),
+      api_key TEXT,
+      secret_key TEXT,
+      webhook_secret TEXT,
+      environment VARCHAR(50) DEFAULT 'production',
+      status VARCHAR(50) DEFAULT 'active',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_channels (
+      id VARCHAR(255) PRIMARY KEY,
+      account_id VARCHAR(255) NOT NULL,
+      waba_id VARCHAR(255),
+      phone_number VARCHAR(100),
+      display_name VARCHAR(255),
+      quality_rating VARCHAR(50) DEFAULT 'GREEN',
+      status VARCHAR(50) DEFAULT 'CONNECTED',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (account_id) REFERENCES bob_accounts(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_conversations (
+      id VARCHAR(255) PRIMARY KEY,
+      bob_conversation_id VARCHAR(255) UNIQUE,
+      customer_id VARCHAR(255) NOT NULL,
+      brand_id VARCHAR(255) NOT NULL,
+      assigned_agent_id VARCHAR(255),
+      status VARCHAR(50) DEFAULT 'open',
+      priority VARCHAR(20) DEFAULT 'medium',
+      category VARCHAR(100) DEFAULT 'general',
+      unread_count INT DEFAULT 0,
+      last_message TEXT,
+      last_message_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_response_at DATETIME,
+      response_time_seconds INT,
+      sla_status VARCHAR(50) DEFAULT 'WITHIN_SLA',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE,
+      FOREIGN KEY (assigned_agent_id) REFERENCES agents(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_messages (
+      id VARCHAR(255) PRIMARY KEY,
+      bob_message_id VARCHAR(255) UNIQUE,
+      conversation_id VARCHAR(255) NOT NULL,
+      customer_id VARCHAR(255) NOT NULL,
+      sender_type VARCHAR(50) NOT NULL,
+      agent_id VARCHAR(255),
+      message_type VARCHAR(50) DEFAULT 'text',
+      content TEXT,
+      media_url TEXT,
+      caption TEXT,
+      template_id VARCHAR(255),
+      delivery_status VARCHAR(50) DEFAULT 'sent',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (conversation_id) REFERENCES bob_conversations(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_templates (
+      id VARCHAR(255) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      category VARCHAR(100) DEFAULT 'UTILITY',
+      language VARCHAR(20) DEFAULT 'en',
+      header_type VARCHAR(50) DEFAULT 'NONE',
+      body_text TEXT NOT NULL,
+      footer_text TEXT,
+      buttons_json JSON,
+      variables_json JSON,
+      status VARCHAR(50) DEFAULT 'APPROVED',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_template_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      template_id VARCHAR(255) NOT NULL,
+      customer_id VARCHAR(255) NOT NULL,
+      agent_id VARCHAR(255),
+      status VARCHAR(50) DEFAULT 'SENT',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (template_id) REFERENCES bob_templates(id) ON DELETE CASCADE,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_webhooks (
+      id VARCHAR(255) PRIMARY KEY,
+      event_type VARCHAR(100) NOT NULL,
+      payload_json JSON,
+      signature VARCHAR(255),
+      processed TINYINT(1) DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bob_sync_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      type VARCHAR(100) NOT NULL,
+      status VARCHAR(50) DEFAULT 'SUCCESS',
+      details TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 }

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { initSchema, initShopifySchema, initKnowledgeSchema, initBISchema, initRADIPSchema, initPIKFSchema, initBAWOESchema, initUNCCSchema, initESCAMSSchema } from "./db/connection.js";
+import { initSchema, initShopifySchema, initKnowledgeSchema, initBISchema, initRADIPSchema, initPIKFSchema, initBAWOESchema, initUNCCSchema, initESCAMSSchema, initBoBSchema } from "./db/connection.js";
 import authRoutes from "./routes/auth.js";
 import customerRoutes from "./routes/customers.js";
 import adminRoutes from "./routes/admin.js";
@@ -27,6 +27,7 @@ import radipRoutes from "./routes/radip.js";
 import pikfRoutes from "./routes/pikf.js";
 import bawoeRoutes from "./routes/bawoe.js";
 import unccRoutes from "./routes/uncc.js";
+import bobRoutes from "./routes/bob.js";
 import { checkEscalations } from "./services/followupService.js";
 import { checkEscalations as checkUNCCEscalations } from "./services/unccService.js";
 import { processShopifyQueue } from "./services/shopifyWebhookService.js";
@@ -42,6 +43,7 @@ try {
   await initBAWOESchema();
   await initUNCCSchema();
   await initESCAMSSchema();
+  await initBoBSchema();
   console.log("Database schema initialized and IAM seeds applied.");
   
   // Initialize Background Workers
@@ -81,6 +83,7 @@ app.use("/api/radip", radipRoutes);
 app.use("/api/pikf", pikfRoutes);
 app.use("/api/bawoe", bawoeRoutes);
 app.use("/api/uncc", unccRoutes);
+app.use("/api/bob", bobRoutes);
 
 // IAM routes
 app.use("/api/users", usersRoutes);
