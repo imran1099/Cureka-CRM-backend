@@ -24,10 +24,23 @@ export async function publishNotification(payload) {
 
 // Fetch notifications for a user
 export async function getNotifications(userId) {
-  // We fetch unread and recently read/completed ones
-  const sql = `
-    SELECT * FROM uncc_notifications 
-    WHERE assigned_to = ? 
+  const user = await db.get("SELECT role FROM agents WHERE id = ?", userId);
+  const isAdminOrGM = user && ['admin', 'super_admin', 'gm', 'Admin', 'Super Admin', 'General Manager'].includes(user.role);
+
+  let sql;
+  let params = [];
+
+  if (isAdminOrGM) {
+    sql = `SELECT * FROM uncc_notifications`;
+  } else {
+    sql = `
+      SELECT * FROM uncc_notifications 
+      WHERE assigned_to = ? OR assigned_to = 'admin' OR assigned_to = 'all' OR assigned_to = 'system'
+    `;
+    params.push(userId);
+  }
+
+  sql += `
     ORDER BY 
       CASE status
         WHEN 'unread' THEN 1
@@ -40,17 +53,18 @@ export async function getNotifications(userId) {
         WHEN 'High' THEN 2 
         WHEN 'Medium' THEN 3 
         WHEN 'Low' THEN 4 
+        ELSE 5
       END,
       created_at DESC
     LIMIT 100
   `;
-  return await db.all(sql, userId);
+  return await db.all(sql, ...params);
 }
 
 export async function markNotificationAsRead(id, userId) {
   await db.run(
-    "UPDATE uncc_notifications SET status = 'read', read_at = CURRENT_TIMESTAMP WHERE id = ? AND assigned_to = ? AND status = 'unread'",
-    [id, userId]
+    "UPDATE uncc_notifications SET status = 'read', read_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'unread'",
+    [id]
   );
 }
 
