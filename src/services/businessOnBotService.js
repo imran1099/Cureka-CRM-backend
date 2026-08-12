@@ -22,19 +22,40 @@ export async function sendWhatsAppMessage({ toPhone, messageText, templateName, 
     return { ok: true, message_id: `bob_msg_${Date.now()}`, mock: true };
   }
 
-  const endpoint = `${account.store_url || "https://api.businessonbot.com"}/v1/messages/send`;
+  // Use the official endpoint format
+  const endpoint = `${account.store_url || "https://api.businessonbot.com"}/wabiz/send`;
+  
   try {
+    let payload;
+    if (templateName) {
+      payload = {
+        receiver: { contacts: [{ whatsapp_id: toPhone }] },
+        message: {
+          template: {
+            name: templateName,
+            language: "en",
+            components: templateParams ? [
+              {
+                type: "body",
+                parameters: templateParams.map(param => ({ type: "text", text: param }))
+              }
+            ] : []
+          }
+        }
+      };
+    } else {
+      payload = {
+        receiver: { contacts: [{ whatsapp_id: toPhone }] },
+        message: { text: messageText }
+      };
+    }
+
     const res = await axios.post(
       endpoint,
-      {
-        to: toPhone,
-        type: templateName ? "template" : "text",
-        text: messageText,
-        template: templateName ? { name: templateName, parameters: templateParams } : undefined
-      },
+      payload,
       {
         headers: {
-          Authorization: `Bearer ${account.api_key}`,
+          "x-api-key": account.api_key,
           "Content-Type": "application/json"
         }
       }
