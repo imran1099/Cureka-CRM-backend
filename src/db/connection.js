@@ -172,6 +172,7 @@ export async function initSchema() {
       quantity INT NOT NULL DEFAULT 1,
       amount DOUBLE NOT NULL DEFAULT 0,
       order_ref VARCHAR(255),
+      shopify_line_item_id VARCHAR(255),
       FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
       KEY idx_purchase_history_customer (customer_id)
     )
@@ -1003,6 +1004,14 @@ async function migrateExistingColumns() {
     }
   }
 
+  // Ensure purchase_history has shopify_line_item_id
+  const [phCols] = await pool.query(
+    "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'purchase_history'"
+  );
+  if (!phCols.map(c => c.COLUMN_NAME).includes('shopify_line_item_id')) {
+    await pool.query('ALTER TABLE purchase_history ADD COLUMN shopify_line_item_id VARCHAR(255)');
+  }
+
   const [callCols] = await pool.query(
     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'call_logs'"
   );
@@ -1598,7 +1607,11 @@ export async function initShopifySchema() {
       id VARCHAR(255) PRIMARY KEY,
       brand_id VARCHAR(255) NOT NULL,
       store_url VARCHAR(255) NOT NULL,
-      access_token VARCHAR(255) NOT NULL,
+      client_id VARCHAR(255),
+      client_secret_encrypted TEXT,
+      access_token_encrypted TEXT,
+      access_token_expires_at DATETIME,
+      access_token VARCHAR(255),
       webhook_secret VARCHAR(255),
       is_active TINYINT(1) NOT NULL DEFAULT 1,
       last_sync_at DATETIME,
@@ -1712,7 +1725,7 @@ export async function initShopifySchema() {
     )
   `);
 
-  // Add missing columns if they don't exist
+    // Add missing columns if they don't exist
   try {
     const [shopCols] = await pool.query(
       "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shopify_stores'"
@@ -1721,6 +1734,14 @@ export async function initShopifySchema() {
 
     if (!existingShopCols.includes('last_sync_at')) {
       await pool.query(`ALTER TABLE shopify_stores ADD COLUMN last_sync_at DATETIME`);
+    }
+    if (!existingShopCols.includes('client_id')) {
+      await pool.query(`ALTER TABLE shopify_stores ADD COLUMN client_id VARCHAR(255)`);
+      await pool.query(`ALTER TABLE shopify_stores ADD COLUMN client_secret_encrypted TEXT`);
+      await pool.query(`ALTER TABLE shopify_stores ADD COLUMN access_token_encrypted TEXT`);
+      await pool.query(`ALTER TABLE shopify_stores ADD COLUMN access_token_expires_at DATETIME`);
+      // Make access_token nullable for backward compatibility
+      await pool.query(`ALTER TABLE shopify_stores MODIFY COLUMN access_token VARCHAR(255) NULL`);
     }
   } catch (err) {
     console.error("Error updating shopify_stores table:", err);

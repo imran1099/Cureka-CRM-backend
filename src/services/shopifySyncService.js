@@ -8,24 +8,19 @@ import { createTimelineEvent } from "./timelineService.js";
  */
 export async function syncCustomer(storeId, shopifyCustomer, brandId) {
   if (!shopifyCustomer || !shopifyCustomer.id) return null;
-
   const shopifyId = String(shopifyCustomer.id);
   const email = shopifyCustomer.email?.toLowerCase().trim() || null;
   
-  // Format phone number (e.g. basic clean up for matching)
-  let phone = shopifyCustomer.phone || null;
-  if (shopifyCustomer.default_address && shopifyCustomer.default_address.phone) {
-    phone = shopifyCustomer.default_address.phone;
-  }
-  if (phone) phone = phone.replace(/\s+/g, '');
+  let phone = shopifyCustomer.phone || shopifyCustomer.default_address?.phone || null;
+  if (phone) phone = phone.replace(/\\s+/g, '');
 
   let crmCustomerId = null;
 
-  // 1. Match by Shopify ID
-  const existingMapping = await db.get("SELECT crm_customer_id FROM shopify_customers WHERE id = ?", shopifyId);
+  // 1. Match by Shopify ID on customers table
+  const existingMapping = await db.get("SELECT id FROM customers WHERE shopify_customer_id = ?", shopifyId);
   
   if (existingMapping) {
-    crmCustomerId = existingMapping.crm_customer_id;
+    crmCustomerId = existingMapping.id;
   } else {
     // 2. Match by Email
     if (!crmCustomerId && email) {
@@ -46,43 +41,20 @@ export async function syncCustomer(storeId, shopifyCustomer, brandId) {
     // Create new CRM customer
     crmCustomerId = "cust_" + nanoid(12);
     await db.run(
-      `INSERT INTO customers (id, name, phone, email, city, segment, source, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, 'Lead', 'shopify', NOW(), NOW())`,
-      crmCustomerId, name, phone || 'N/A', email, city
+      `INSERT INTO customers (id, name, phone, email, city, segment, source, shopify_customer_id, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, 'Lead', 'shopify', ?, NOW(), NOW())`,
+      crmCustomerId, name, phone || 'N/A', email, city, shopifyId
     );
-    
-    // Timeline event for new customer creation via Shopify
-    await createTimelineEvent({
-      customerId: crmCustomerId,
-      eventType: "profile_updated",
-      eventTitle: "Customer Created via Shopify",
-      eventDescription: `Imported from Shopify (ID: ${shopifyId})`,
-      sourceSystem: "shopify",
-      brandId
-    });
   } else {
-    // Update existing CRM customer if missing critical details
-    // We only update if phone or email is missing in CRM but present in Shopify
+    // Update existing CRM customer
     await db.run(
       `UPDATE customers 
        SET email = COALESCE(email, ?), 
            phone = COALESCE(phone, ?),
+           shopify_customer_id = ?,
            updated_at = NOW()
        WHERE id = ?`,
-      email, phone || 'N/A', crmCustomerId
-    );
-  }
-
-  // Upsert into shopify_customers mapping
-  if (existingMapping) {
-    await db.run(
-      "UPDATE shopify_customers SET email = ?, phone = ?, updated_at = NOW() WHERE id = ?",
-      email, phone, shopifyId
-    );
-  } else {
-    await db.run(
-      "INSERT INTO shopify_customers (id, crm_customer_id, brand_id, email, phone) VALUES (?, ?, ?, ?, ?)",
-      shopifyId, crmCustomerId, brandId, email, phone
+      email, phone || 'N/A', shopifyId, crmCustomerId
     );
   }
 
@@ -103,7 +75,6 @@ export async function syncCustomer(storeId, shopifyCustomer, brandId) {
  */
 export async function syncOrder(storeId, shopifyOrder, brandId) {
   if (!shopifyOrder || !shopifyOrder.id) return null;
-
   const shopifyId = String(shopifyOrder.id);
   
   // 1. Ensure customer is synced
@@ -113,96 +84,44 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
     return null;
   }
 
-  const orderNumber = shopifyOrder.order_number || shopifyOrder.name;
-  const totalPrice = parseFloat(shopifyOrder.total_price || 0);
-  const currency = shopifyOrder.currency;
-  const financialStatus = shopifyOrder.financial_status || 'pending';
-  const fulfillmentStatus = shopifyOrder.fulfillment_status || 'unfulfilled';
-  const tags = shopifyOrder.tags || '';
-  const createdAt = new Date(shopifyOrder.created_at).toISOString().slice(0, 19).replace('T', ' ');
-  const updatedAt = new Date(shopifyOrder.updated_at).toISOString().slice(0, 19).replace('T', ' ');
+  const orderDate = new Date(shopifyOrder.created_at || Date.now()).toISOString().slice(0, 19).replace('T', ' ');
 
-  const existingOrder = await db.get("SELECT id, financial_status, fulfillment_status FROM shopify_orders WHERE id = ?", shopifyId);
-
-  let isNew = false;
-  if (existingOrder) {
-    await db.run(
-      `UPDATE shopify_orders 
-       SET total_price = ?, financial_status = ?, fulfillment_status = ?, tags = ?, updated_at = ?
-       WHERE id = ?`,
-      totalPrice, financialStatus, fulfillmentStatus, tags, updatedAt, shopifyId
-    );
-  } else {
-    isNew = true;
-    await db.run(
-      `INSERT INTO shopify_orders 
-       (id, crm_customer_id, brand_id, order_number, total_price, currency, financial_status, fulfillment_status, tags, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      shopifyId, crmCustomerId, brandId, orderNumber, totalPrice, currency, financialStatus, fulfillmentStatus, tags, createdAt, updatedAt
-    );
+  if (!shopifyOrder.line_items || shopifyOrder.line_items.length === 0) {
+    return shopifyId;
   }
 
-  // Sync line items (simplified to delete and recreate for ease)
-  await db.run("DELETE FROM shopify_order_items WHERE order_id = ?", shopifyId);
-  if (shopifyOrder.line_items && shopifyOrder.line_items.length > 0) {
-    for (const item of shopifyOrder.line_items) {
-      await db.run(
-        `INSERT INTO shopify_order_items (id, order_id, product_id, variant_id, sku, name, quantity, price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        String(item.id), shopifyId, String(item.product_id), String(item.variant_id), item.sku || '', item.name || '', parseInt(item.quantity || 1), parseFloat(item.price || 0)
-      );
-    }
+  // Get current line items for this order to handle removals
+  const currentItems = await db.all("SELECT shopify_line_item_id FROM purchase_history WHERE order_ref = ?", shopifyId);
+  const currentItemIds = currentItems.map(i => i.shopify_line_item_id);
+  
+  const incomingItemIds = shopifyOrder.line_items.map(item => String(item.id));
+
+  // Remove items that are no longer in the order
+  const toRemove = currentItemIds.filter(id => !incomingItemIds.includes(id));
+  for (const removeId of toRemove) {
+    await db.run("DELETE FROM purchase_history WHERE shopify_line_item_id = ?", removeId);
   }
 
-  // Workflow & Timeline Triggers
-  if (isNew) {
-    await createTimelineEvent({
-      customerId: crmCustomerId,
-      eventType: "order_placed",
-      eventTitle: `Order ${orderNumber} Placed`,
-      eventDescription: `Total: ${totalPrice} ${currency}`,
-      sourceSystem: "shopify",
-      brandId
-    });
+  // Upsert incoming items
+  for (const item of shopifyOrder.line_items) {
+    const lineItemId = String(item.id);
+    const productName = item.name || item.title || 'Unknown Product';
+    const quantity = parseInt(item.quantity || 1);
+    const amount = parseFloat(item.price || 0);
+
+    const exists = await db.get("SELECT id FROM purchase_history WHERE shopify_line_item_id = ?", lineItemId);
     
-    // Workflow: High Value Order
-    if (totalPrice > 10000) {
-       // Example integration trigger (would be hooked into the rules engine)
-       // For now just add an internal note
-       await createTimelineEvent({
-         customerId: crmCustomerId,
-         eventType: "internal_note",
-         eventTitle: "High Value Order Detected",
-         eventDescription: `Order ${orderNumber} requires VIP attention.`,
-         isInternal: true,
-         sourceSystem: "system",
-         brandId
-       });
-    }
-  }
-
-  // Financial Status updates
-  if (existingOrder && existingOrder.financial_status !== financialStatus && financialStatus === 'paid') {
-    await createTimelineEvent({
-      customerId: crmCustomerId,
-      eventType: "payment_received",
-      eventTitle: `Payment Received for Order ${orderNumber}`,
-      sourceSystem: "shopify",
-      brandId
-    });
-  }
-
-  // Refund tracking
-  if (financialStatus === 'refunded' || financialStatus === 'partially_refunded') {
-    if (!existingOrder || (existingOrder.financial_status !== 'refunded' && existingOrder.financial_status !== 'partially_refunded')) {
-      await createTimelineEvent({
-        customerId: crmCustomerId,
-        eventType: "refund_processed",
-        eventTitle: `Refund Processed for Order ${orderNumber}`,
-        sourceSystem: "shopify",
-        brandId
-      });
-      // Optionally create a support ticket for the refund context
+    if (exists) {
+      await db.run(
+        "UPDATE purchase_history SET product_name = ?, quantity = ?, amount = ? WHERE shopify_line_item_id = ?",
+        productName, quantity, amount, lineItemId
+      );
+    } else {
+      await db.run(
+        `INSERT INTO purchase_history (id, customer_id, order_date, product_name, quantity, amount, order_ref, shopify_line_item_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        "ph_" + nanoid(10), crmCustomerId, orderDate, productName, quantity, amount, shopifyId, lineItemId
+      );
     }
   }
 

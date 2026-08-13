@@ -564,7 +564,7 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
     // 1. Orders & Purchases
     const purchaseOrders = await db.all(
       `SELECT id, order_date, product_name, quantity, amount, 'Paid' as payment_status, 
-              'Delivered' as status, 'Delhivery' as courier, 'DEL-984210' as tracking_number
+              'Delivered' as status, 'Delhivery' as courier, 'DEL-984210' as tracking_number, order_ref
        FROM purchase_history WHERE customer_id = ? ORDER BY order_date DESC`,
       req.params.id
     );
@@ -600,7 +600,8 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
     const brandLinks = await db.all("SELECT b.name as brand_name, cb.* FROM customer_brands cb JOIN brands b ON cb.brand_id = b.id WHERE cb.customer_id = ?", req.params.id);
 
     // 6. Calculate Financial & Customer Analytics Metrics
-    const totalOrders = purchaseOrders.length;
+    const distinctOrders = new Set(purchaseOrders.map(o => o.order_ref || o.id)).size;
+    const totalOrders = distinctOrders;
     const totalSpend = purchaseOrders.reduce((sum, o) => sum + (Number(o.amount) || 0), 0);
     const aov = totalOrders ? Math.round(totalSpend / totalOrders) : 0;
     const repeatPurchasePct = totalOrders > 1 ? 85 : 0;
@@ -611,8 +612,24 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
     // 7. Build Consolidated Chronological Timeline
     const timelineEvents = await db.all("SELECT id, event_date as date, event_type as title, description as remarks FROM customer_timeline_events WHERE customer_id = ?", req.params.id);
 
+    const orderTimelineMap = new Map();
+    purchaseOrders.forEach(o => {
+      const key = o.order_ref || o.id;
+      if (!orderTimelineMap.has(key)) {
+        orderTimelineMap.set(key, { id: o.id, type: "order", date: new Date(o.order_date).toISOString(), title: `Order Placed`, amount: 0, products: [], tracking: o.tracking_number });
+      }
+      const evt = orderTimelineMap.get(key);
+      evt.amount += Number(o.amount) || 0;
+      evt.products.push(`${o.quantity}x ${o.product_name}`);
+    });
+    const orderTimelineEvents = Array.from(orderTimelineMap.values()).map(evt => ({
+      id: evt.id, type: evt.type, date: evt.date, amount: evt.amount,
+      title: evt.products.length === 1 ? `Order Placed: ${evt.products[0].replace(/^\\d+x /, '')}` : `Order Placed (${evt.products.length} items)`,
+      remarks: `Items: ${evt.products.join(', ')} • Tracking: ${evt.tracking}`
+    }));
+
     const mergedTimeline = [
-      ...purchaseOrders.map(o => ({ id: o.id, type: "order", date: new Date(o.order_date).toISOString(), title: `Order Placed: ${o.product_name}`, amount: o.amount, remarks: `Qty: ${o.quantity} • Tracking: ${o.tracking_number}` })),
+      ...orderTimelineEvents,
       ...calls.map(c => ({ id: c.id, type: "call", date: new Date(c.date).toISOString(), title: `Call (${c.outcome})`, remarks: c.remarks, agent: c.agent_name })),
       ...tickets.map(t => ({ id: t.id, type: "ticket", date: new Date(t.created_at).toISOString(), title: `Ticket #${t.id.slice(0, 8)} (${t.department})`, remarks: `Status: ${t.status} • Priority: ${t.priority}` })),
       ...notes.map(n => ({ id: n.id, type: "note", date: new Date(n.date).toISOString(), title: "Internal Agent Note", remarks: n.content, agent: n.agent_name })),

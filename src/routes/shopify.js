@@ -73,19 +73,20 @@ router.get("/stores", requireBrandAccess, async (req, res, next) => {
 // POST /api/shopify/stores
 router.post("/stores", requireBrandAccess, async (req, res, next) => {
   try {
-    const { brand_id, store_url, access_token, webhook_secret } = req.body;
-    if (!brand_id || !store_url || !access_token) {
-      return res.status(400).json({ error: "brand_id, store_url, and access_token are required." });
+    const { brand_id, store_url, clientId, clientSecret, webhook_secret } = req.body;
+    if (!brand_id || !store_url || !clientId || !clientSecret) {
+      return res.status(400).json({ error: "brand_id, store_url, clientId, and clientSecret are required." });
     }
 
-    const storeId = await connectStore({
+    const result = await connectStore({
       brandId: brand_id,
       storeUrl: store_url,
-      accessToken: access_token,
+      clientId,
+      clientSecret,
       webhookSecret: webhook_secret
     });
 
-    res.status(201).json({ id: storeId, message: "Store connected successfully" });
+    res.status(201).json({ id: result.id, store_url: result.store_url, message: "Store connected successfully" });
   } catch (err) {
     // Return 400 for token validation failures
     res.status(400).json({ error: err.message });

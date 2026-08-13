@@ -215,6 +215,8 @@ async function processBulkData(url, store, logId, entityType) {
       crlfDelay: Infinity
     });
 
+    let currentOrder = null;
+
     for await (const line of rl) {
       if (!line.trim()) continue;
       const node = JSON.parse(line);
@@ -223,21 +225,46 @@ async function processBulkData(url, store, logId, entityType) {
         if (entityType === "customers") {
           const shopifyCustomer = mapGraphQLCustomer(node);
           await syncCustomer(store.id, shopifyCustomer, store.brand_id);
+          processed++;
         } else if (entityType === "orders") {
-          // If it's a line item or customer attached to an order, the bulk API returns it as a separate JSONL line linked via __parentId.
-          // For simplicity in this implementation, we assume basic node structure or use the REST payload mapper.
-          // Note: Full production implementation would reconstruct the order from the __parentId links.
-          // Because of complexity, we will trigger a REST fetch for the full order detail to ensure data completeness for now.
           if (!node.__parentId) {
-             const restOrder = { id: node.id.split('/').pop(), order_number: node.name, ...node };
-             // Skip detailed REST fetch here to save API limits; rely on basic sync
+            if (currentOrder) {
+              await syncOrder(store.id, currentOrder, store.brand_id);
+              processed++;
+            }
+            currentOrder = {
+              id: node.id.split('/').pop(),
+              order_number: node.name,
+              created_at: node.createdAt,
+              customer: node.customer ? {
+                 id: node.customer.id.split('/').pop(),
+                 email: node.customer.email,
+                 phone: node.customer.phone,
+                 first_name: node.customer.firstName,
+                 last_name: node.customer.lastName
+              } : null,
+              line_items: []
+            };
+          } else {
+            if (currentOrder && node.__parentId === `gid://shopify/Order/${currentOrder.id}`) {
+              currentOrder.line_items.push({
+                id: node.id.split('/').pop(),
+                name: node.title,
+                quantity: node.quantity,
+                price: node.originalTotalSet?.shopMoney?.amount || 0
+              });
+            }
           }
         }
-        processed++;
       } catch (err) {
         failed++;
         console.error(`Failed to process node from bulk import:`, err);
       }
+    }
+
+    if (currentOrder) {
+      await syncOrder(store.id, currentOrder, store.brand_id);
+      processed++;
     }
 
     await db.run(
