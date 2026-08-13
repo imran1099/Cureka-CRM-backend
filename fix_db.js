@@ -8,15 +8,14 @@ async function fixTable() {
     await db.run(`
       CREATE TABLE shopify_sync_logs (
         id VARCHAR(255) PRIMARY KEY,
-        store_id VARCHAR(255) NOT NULL,
-        entity_type VARCHAR(100) NOT NULL,
-        status VARCHAR(50) NOT NULL,
+        brand_id VARCHAR(255),
+        sync_type VARCHAR(50),
+        status VARCHAR(50),
         records_processed INT DEFAULT 0,
-        records_failed INT DEFAULT 0,
-        error_message TEXT,
+        records_failed INT NOT NULL DEFAULT 0,
         started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         completed_at DATETIME,
-        FOREIGN KEY (store_id) REFERENCES shopify_stores(id) ON DELETE CASCADE
+        error_message TEXT
       )
     `);
     console.log('Created shopify_sync_logs with correct schema');

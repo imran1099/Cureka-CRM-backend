@@ -142,8 +142,8 @@ export async function startBulkImport(storeId, entityType) {
 
   const logId = "ssl_" + nanoid(10);
   await db.run(
-    "INSERT INTO shopify_sync_logs (id, store_id, entity_type, status) VALUES (?, ?, ?, 'running')",
-    logId, storeId, entityType
+    "INSERT INTO shopify_sync_logs (id, brand_id, sync_type, status) VALUES (?, ?, ?, 'running')",
+    logId, store.brand_id, entityType
   );
 
   return { bulkOperationId: data.bulkOperation.id, logId };
@@ -183,7 +183,7 @@ export async function checkBulkImportStatus(storeId, logId) {
   if (operation.status === 'COMPLETED') {
     if (operation.url) {
       // Process the JSONL file in the background so we don't block the API response
-      processBulkData(operation.url, store, logId, log.entity_type).catch(e => console.error("Bulk process error:", e));
+      processBulkData(operation.url, store, logId, log.sync_type).catch(e => console.error("Bulk process error:", e));
       await db.run("UPDATE shopify_sync_logs SET status = 'processing' WHERE id = ?", logId);
     } else {
       // No data to process

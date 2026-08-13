@@ -122,10 +122,17 @@ router.get("/sync/status/:storeId/:logId", requireBrandAccess, async (req, res, 
 router.get("/logs/:storeId", requireBrandAccess, async (req, res, next) => {
   try {
     const { storeId } = req.params;
-    const logs = await db.all("SELECT * FROM shopify_sync_logs WHERE store_id = ? ORDER BY started_at DESC LIMIT 20", storeId);
     
-    // Also fetch queue stats
-    const [queueStats] = await db.all(`
+    // Resolve the corresponding store/brand to query sync logs correctly using the production schema
+    const store = await db.get("SELECT brand_id FROM shopify_stores WHERE id = ?", storeId);
+    if (!store) {
+      return res.status(404).json({ error: "Store not found" });
+    }
+
+    const logs = await db.all("SELECT * FROM shopify_sync_logs WHERE brand_id = ? ORDER BY started_at DESC LIMIT 20", store.brand_id);
+    
+    // Also fetch queue stats (store_id is the correct column for shopify_event_queue)
+    const queueRows = await db.all(`
       SELECT status, COUNT(*) as count 
       FROM shopify_event_queue 
       WHERE store_id = ? 
@@ -133,7 +140,7 @@ router.get("/logs/:storeId", requireBrandAccess, async (req, res, next) => {
     `, storeId);
     
     const stats = { pending: 0, processing: 0, completed: 0, failed: 0 };
-    for (const row of queueStats) {
+    for (const row of queueRows) {
       stats[row.status] = row.count;
     }
 
