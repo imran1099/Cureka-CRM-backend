@@ -12,7 +12,7 @@ const router = express.Router();
 // ─── PUBLIC WEBHOOK ENDPOINT ──────────────────────────────────────────────────
 // This must be unauthenticated to accept requests from Shopify.
 // We use raw body parser to get the exact string for HMAC validation.
-router.post("/webhooks/:storeId", express.raw({ type: 'application/json' }), async (req, res, next) => {
+router.post("/webhooks/:storeId", express.raw({ type: '*/*' }), async (req, res, next) => {
   try {
     const { storeId } = req.params;
     const hmacHeader = req.get("x-shopify-hmac-sha256");
@@ -28,21 +28,27 @@ router.post("/webhooks/:storeId", express.raw({ type: 'application/json' }), asy
       return res.status(404).send("Store not found or inactive");
     }
 
-    let secretToUse = null;
+    let clientSecret = null;
     if (store.client_secret_encrypted) {
       try {
-        secretToUse = decrypt(store.client_secret_encrypted);
+        clientSecret = decrypt(store.client_secret_encrypted);
       } catch (err) {
         console.error(`Failed to decrypt client_secret for store ${storeId}`);
       }
     }
     
-    // Fallback to legacy webhook_secret if client_secret is missing or decryption failed
-    if (!secretToUse && store.webhook_secret) {
-      secretToUse = store.webhook_secret;
+    // Try validating with Client Secret (for programmatic webhooks)
+    let isValid = false;
+    if (clientSecret) {
+      isValid = validateShopifyWebhook(rawBody, hmacHeader, clientSecret);
+    }
+    
+    // If that fails, try validating with the manual webhook_secret (for Admin UI webhooks)
+    if (!isValid && store.webhook_secret) {
+      isValid = validateShopifyWebhook(rawBody, hmacHeader, store.webhook_secret);
     }
 
-    if (!validateShopifyWebhook(rawBody, hmacHeader, secretToUse)) {
+    if (!isValid) {
       console.warn(`Invalid webhook signature for store ${storeId}, topic ${topic}`);
       return res.status(401).send("Unauthorized: Invalid signature");
     }
