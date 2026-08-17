@@ -8,12 +8,23 @@ import { syncCustomer, syncOrder, syncProduct } from "./shopifySyncService.js";
  * Returns true if valid, false otherwise.
  */
 export function validateShopifyWebhook(rawBody, hmacHeader, secret) {
-  if (!secret) return false;
-  const hash = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody, "utf8")
-    .digest("base64");
-  return hash === hmacHeader;
+  if (!secret || !hmacHeader) return false;
+  try {
+    const generatedHash = crypto
+      .createHmac("sha256", secret)
+      .update(rawBody, "utf8")
+      .digest("base64");
+
+    const generatedBuffer = Buffer.from(generatedHash);
+    const providedBuffer = Buffer.from(hmacHeader);
+
+    if (generatedBuffer.length !== providedBuffer.length) {
+      return false;
+    }
+    return crypto.timingSafeEqual(generatedBuffer, providedBuffer);
+  } catch (err) {
+    return false;
+  }
 }
 
 /**

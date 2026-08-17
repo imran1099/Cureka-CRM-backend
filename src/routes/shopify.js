@@ -4,6 +4,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
 import { connectStore } from "../services/shopifyAuthService.js";
 import { validateShopifyWebhook, enqueueWebhook } from "../services/shopifyWebhookService.js";
+import { decrypt } from "../utils/crypto.js";
 import { startBulkImport, checkBulkImportStatus } from "../services/shopifyBulkImportService.js";
 
 const router = express.Router();
@@ -22,12 +23,26 @@ router.post("/webhooks/:storeId", express.raw({ type: 'application/json' }), asy
       return res.status(400).send("Missing Shopify headers");
     }
 
-    const store = await db.get("SELECT webhook_secret FROM shopify_stores WHERE id = ? AND is_active = 1", storeId);
+    const store = await db.get("SELECT webhook_secret, client_secret_encrypted FROM shopify_stores WHERE id = ? AND is_active = 1", storeId);
     if (!store) {
       return res.status(404).send("Store not found or inactive");
     }
 
-    if (!validateShopifyWebhook(rawBody, hmacHeader, store.webhook_secret)) {
+    let secretToUse = null;
+    if (store.client_secret_encrypted) {
+      try {
+        secretToUse = decrypt(store.client_secret_encrypted);
+      } catch (err) {
+        console.error(`Failed to decrypt client_secret for store ${storeId}`);
+      }
+    }
+    
+    // Fallback to legacy webhook_secret if client_secret is missing or decryption failed
+    if (!secretToUse && store.webhook_secret) {
+      secretToUse = store.webhook_secret;
+    }
+
+    if (!validateShopifyWebhook(rawBody, hmacHeader, secretToUse)) {
       console.warn(`Invalid webhook signature for store ${storeId}, topic ${topic}`);
       return res.status(401).send("Unauthorized: Invalid signature");
     }
