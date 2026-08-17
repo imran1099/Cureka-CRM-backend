@@ -60,7 +60,14 @@ app.use(cors({
   ],
   credentials: true
 }));
-app.use(express.json({ limit: "5mb" }));
+// Bypass global JSON parsing for Shopify webhooks so express.raw() works
+app.use((req, res, next) => {
+  if (req.originalUrl.startsWith("/api/shopify/webhooks")) {
+    next();
+  } else {
+    express.json({ limit: "5mb" })(req, res, next);
+  }
+});
 
 app.get("/api/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
