@@ -562,12 +562,78 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
     if (!customer) return res.status(404).json({ error: "Customer not found or access denied" });
 
     // 1. Orders & Purchases
-    const purchaseOrders = await db.all(
-      `SELECT id, order_date, product_name, quantity, amount, 'Paid' as payment_status, 
-              'Delivered' as status, 'Delhivery' as courier, 'DEL-984210' as tracking_number, order_ref
-       FROM purchase_history WHERE customer_id = ? ORDER BY order_date DESC`,
+    const manualOrders = await db.all(
+      `SELECT id, order_date, product_name, quantity, amount, order_ref
+       FROM purchase_history WHERE customer_id = ? AND shopify_line_item_id IS NULL ORDER BY order_date DESC`,
       req.params.id
     );
+    
+    const shopifyOrdersRaw = await db.all(
+      `SELECT o.id, o.order_number, o.total_price, o.currency, o.financial_status, o.fulfillment_status, o.created_at, o.tags,
+              i.id as item_id, i.name as product_name, i.quantity, i.price as amount, i.sku
+       FROM shopify_orders o 
+       LEFT JOIN shopify_order_items i ON o.id = i.order_id 
+       WHERE o.crm_customer_id = ? ORDER BY o.created_at DESC`,
+      req.params.id
+    );
+
+    // Group Shopify orders
+    const shopifyOrdersMap = new Map();
+    shopifyOrdersRaw.forEach(row => {
+      if (!shopifyOrdersMap.has(row.id)) {
+        shopifyOrdersMap.set(row.id, {
+          id: row.id,
+          order_number: row.order_number,
+          order_date: row.created_at,
+          source: "Shopify",
+          financial_status: row.financial_status,
+          fulfillment_status: row.fulfillment_status,
+          total_price: row.total_price,
+          currency: row.currency,
+          tags: row.tags,
+          line_items: []
+        });
+      }
+      if (row.item_id) {
+        shopifyOrdersMap.get(row.id).line_items.push({
+          product_name: row.product_name,
+          sku: row.sku,
+          quantity: row.quantity,
+          unit_price: row.amount,
+          total_price: (row.amount || 0) * (row.quantity || 1)
+        });
+      }
+    });
+
+    const unifiedOrders = [];
+    for (const o of Array.from(shopifyOrdersMap.values())) {
+      unifiedOrders.push({
+        ...o,
+        tracking_number: "N/A" // Tracking will be merged from timeline if exists
+      });
+    }
+    for (const m of manualOrders) {
+      unifiedOrders.push({
+        id: m.id,
+        order_number: m.order_ref || m.id,
+        order_date: m.order_date,
+        source: "CRM",
+        financial_status: "Paid", // Default for manual
+        fulfillment_status: "Delivered",
+        total_price: m.amount * (m.quantity || 1),
+        currency: "INR",
+        line_items: [{
+          product_name: m.product_name,
+          quantity: m.quantity,
+          unit_price: m.amount,
+          total_price: m.amount * (m.quantity || 1)
+        }],
+        tracking_number: "N/A"
+      });
+    }
+    
+    // Sort combined orders by date desc
+    unifiedOrders.sort((a, b) => new Date(b.order_date) - new Date(a.order_date));
 
     // 2. Calls & Communications
     const calls = await db.all(
@@ -600,54 +666,74 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
     const brandLinks = await db.all("SELECT b.name as brand_name, cb.* FROM customer_brands cb JOIN brands b ON cb.brand_id = b.id WHERE cb.customer_id = ?", req.params.id);
 
     // 6. Calculate Financial & Customer Analytics Metrics
-    const distinctOrders = new Set(purchaseOrders.map(o => o.order_ref || o.id)).size;
-    const totalOrders = distinctOrders;
-    const totalSpend = purchaseOrders.reduce((sum, o) => sum + (Number(o.amount) || 0), 0);
-    const aov = totalOrders ? Math.round(totalSpend / totalOrders) : 0;
-    const repeatPurchasePct = totalOrders > 1 ? 85 : 0;
-    const rfmScore = totalOrders >= 3 ? "R5-F5-M5 (Champions)" : "R4-F2-M3 (Active)";
-    const riskScore = customer.segment === "vip" ? 12 : 28;
-    const loyaltyPoints = Math.round(totalSpend * 0.1);
+    const totalOrders = unifiedOrders.length;
+    const totalSpend = customer.ltv || 0;
+    const aov = totalOrders > 0 ? Math.round(totalSpend / totalOrders) : 0;
+    const repeatPurchasePct = totalOrders > 1 ? Math.round(((totalOrders - 1) / totalOrders) * 100) : 0;
+    
+    // Dynamic RFM
+    let rfmScore = "N/A";
+    if (totalOrders > 0) {
+      const daysSinceLastOrder = Math.floor((new Date() - new Date(unifiedOrders[0].order_date)) / (1000 * 60 * 60 * 24));
+      let segment = "Active";
+      if (daysSinceLastOrder > 90) segment = "At Risk";
+      if (daysSinceLastOrder > 180) segment = "Churned";
+      if (totalOrders >= 3 && daysSinceLastOrder <= 30) segment = "Champions";
+      rfmScore = `${totalOrders >= 3 ? 'High' : 'Med'}-${segment}`;
+    }
+
+    // Dynamic Risk Score
+    let riskScore = "N/A";
+    if (totalOrders > 0) {
+      const daysSinceLastOrder = Math.floor((new Date() - new Date(unifiedOrders[0].order_date)) / (1000 * 60 * 60 * 24));
+      riskScore = `${Math.min(100, Math.floor(daysSinceLastOrder / 3))} / 100 (${daysSinceLastOrder > 60 ? 'High' : 'Low'})`;
+    }
+
+    // Dynamic Predicted Next Order
+    let predictedNextOrder = "Insufficient data";
+    if (totalOrders >= 2) {
+      const firstDate = new Date(unifiedOrders[unifiedOrders.length - 1].order_date);
+      const lastDate = new Date(unifiedOrders[0].order_date);
+      const avgIntervalDays = Math.floor(((lastDate - firstDate) / (1000 * 60 * 60 * 24)) / (totalOrders - 1));
+      if (avgIntervalDays > 0) {
+        const nextDate = new Date(lastDate.getTime() + (avgIntervalDays * 24 * 60 * 60 * 1000));
+        predictedNextOrder = nextDate.toISOString().split('T')[0];
+      }
+    }
 
     // 7. Build Consolidated Chronological Timeline
     const timelineEvents = await db.all("SELECT id, event_date as date, event_type as title, description as remarks FROM customer_timeline_events WHERE customer_id = ?", req.params.id);
 
-    const orderTimelineMap = new Map();
-    purchaseOrders.forEach(o => {
-      const key = o.order_ref || o.id;
-      if (!orderTimelineMap.has(key)) {
-        orderTimelineMap.set(key, { id: o.id, type: "order", date: new Date(o.order_date).toISOString(), title: `Order Placed`, amount: 0, products: [], tracking: o.tracking_number });
-      }
-      const evt = orderTimelineMap.get(key);
-      evt.amount += Number(o.amount) || 0;
-      evt.products.push(`${o.quantity}x ${o.product_name}`);
-    });
-    const orderTimelineEvents = Array.from(orderTimelineMap.values()).map(evt => ({
-      id: evt.id, type: evt.type, date: evt.date, amount: evt.amount,
-      title: evt.products.length === 1 ? `Order Placed: ${evt.products[0].replace(/^\\d+x /, '')}` : `Order Placed (${evt.products.length} items)`,
-      remarks: `Items: ${evt.products.join(', ')} • Tracking: ${evt.tracking}`
-    }));
-
     const mergedTimeline = [
-      ...orderTimelineEvents,
+      ...unifiedOrders.map(o => ({ 
+        id: o.id, 
+        type: "order", 
+        date: new Date(o.order_date).toISOString(), 
+        title: o.source === "Shopify" ? `Shopify Order #${o.order_number}` : `Manual Order`,
+        amount: o.total_price,
+        remarks: `Items: ${o.line_items.map(i => i.product_name).join(', ')} • Status: ${o.fulfillment_status}` 
+      })),
       ...calls.map(c => ({ id: c.id, type: "call", date: new Date(c.date).toISOString(), title: `Call (${c.outcome})`, remarks: c.remarks, agent: c.agent_name })),
       ...tickets.map(t => ({ id: t.id, type: "ticket", date: new Date(t.created_at).toISOString(), title: `Ticket #${t.id.slice(0, 8)} (${t.department})`, remarks: `Status: ${t.status} • Priority: ${t.priority}` })),
       ...notes.map(n => ({ id: n.id, type: "note", date: new Date(n.date).toISOString(), title: "Internal Agent Note", remarks: n.content, agent: n.agent_name })),
       ...timelineEvents.map(e => ({ id: e.id, type: "event", date: new Date(e.date).toISOString(), title: e.title, remarks: e.remarks }))
     ].sort((a, b) => new Date(b.date) - new Date(a.date));
 
+    // Determine loyalty points (if DB has a column, use it, else return N/A)
+    const loyaltyPoints = customer.loyalty_points !== undefined ? customer.loyalty_points : "Not available";
+
     const parsedCustomer = withParsedFields(customer);
 
     res.json({
       customer: {
         ...parsedCustomer,
-        is_vip: customer.segment === "vip" || totalSpend > 10000 ? 1 : 0,
+        is_vip: customer.segment === "vip" ? 1 : 0,
         loyalty_points: loyaltyPoints,
-        birthday: customer.birthday || "1992-08-15",
-        gender: customer.gender || "Female",
-        whatsapp_consent: 1,
-        newsletter_consent: 1,
-        membership_tier: customer.segment === "vip" ? "Gold VIP Member" : "Silver Member",
+        birthday: customer.birthday || "N/A",
+        gender: customer.gender || "N/A",
+        whatsapp_consent: customer.whatsapp_consent !== undefined ? customer.whatsapp_consent : "N/A",
+        newsletter_consent: customer.newsletter_consent !== undefined ? customer.newsletter_consent : "N/A",
+        membership_tier: customer.segment === "vip" ? "VIP" : "Standard",
         brandLinks
       },
       analytics: {
@@ -657,39 +743,34 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
         repeat_purchase_pct: repeatPurchasePct,
         rfm_score: rfmScore,
         risk_score: riskScore,
-        predicted_next_purchase: "In 12 days (Predicted)",
-        last_purchase_date: purchaseOrders[0]?.order_date || null
+        predicted_next_purchase: predictedNextOrder,
+        last_purchase_date: unifiedOrders.length > 0 ? unifiedOrders[0].order_date : null
       },
-      orders: purchaseOrders,
+      orders: unifiedOrders,
       communication: {
         calls,
         notes,
-        whatsapp: [
-          { id: "wa_1", date: new Date(Date.now() - 86400000).toISOString(), type: "outbound", message: "Hi! Your order #ORD-8921 has been shipped via Delhivery." },
-          { id: "wa_2", date: new Date(Date.now() - 172800000).toISOString(), type: "inbound", message: "Can you confirm the delivery date?" }
-        ],
-        emails: [
-          { id: "em_1", date: new Date(Date.now() - 36000000).toISOString(), subject: "Order Invoice #ORD-8921", status: "Opened" }
-        ]
+        whatsapp: [],
+        emails: []
       },
       support: {
         tickets,
         open_tickets: tickets.filter(t => t.status !== "closed").length,
-        csat_score: "4.9 / 5.0",
-        nps_score: "9 / 10"
+        csat_score: "N/A",
+        nps_score: "N/A"
       },
       marketing: {
-        campaigns_received: 6,
-        emails_opened: 5,
-        whatsapp_clicks: 4,
-        coupons_used: ["SUMMER20", "VIPFIRST"],
-        referral_source: "Instagram Ad",
-        utm_source: "google_search_brand"
+        campaigns_received: "N/A",
+        emails_opened: "N/A",
+        whatsapp_clicks: "N/A",
+        coupons_used: [],
+        referral_source: "N/A",
+        utm_source: "N/A"
       },
       subscriptions: {
-        newsletter: true,
-        whatsapp_consent: true,
-        membership_tier: "Gold VIP Member",
+        newsletter: customer.newsletter_consent === 1,
+        whatsapp_consent: customer.whatsapp_consent === 1,
+        membership_tier: customer.segment === "vip" ? "VIP" : "Standard",
         loyalty_points: loyaltyPoints
       },
       timeline: mergedTimeline,
@@ -697,14 +778,18 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
       tags,
       followups,
       aiInsights: {
-        summary: `High value customer with ₹${totalSpend.toLocaleString("en-IN")} LTV across ${totalOrders} orders. High brand affinity and low churn risk.`,
-        buying_behavior: "Prefers premium wellness products with repeat orders every 30 days.",
-        complaint_history: "No severe escalations; past queries resolved within SLA.",
-        sentiment: { positive: 88, neutral: 9, negative: 3 },
-        risk_level: "Low Risk (12/100)",
-        suggested_next_action: "Send personalized loyalty discount code before predicted reorder window.",
-        recommendations: ["Cureka Vitamin C Serum", "Organic Immunity Booster Supplement"],
-        smart_reply: `Hello ${parsedCustomer.name}, thank you for being a valued VIP member. I am happy to assist you with your request right away!`
+        summary: totalOrders > 0 
+          ? `Customer has ₹${totalSpend.toLocaleString("en-IN")} lifetime spend across ${totalOrders} orders. Average order value is ₹${aov.toLocaleString("en-IN")}.` 
+          : "Customer has no purchase history.",
+        buying_behavior: totalOrders > 0 
+          ? `Most frequently purchased category: ${unifiedOrders[0]?.line_items[0]?.product_name || "Unknown"}`
+          : "Insufficient purchase history to determine buying behavior.",
+        complaint_history: tickets.length > 0 ? `Customer has raised ${tickets.length} support tickets.` : "No support tickets raised.",
+        sentiment: "Sentiment analysis unavailable",
+        risk_level: riskScore,
+        suggested_next_action: totalOrders > 0 ? "Review recent order history and re-engage if necessary." : "Send welcome sequence to encourage first purchase.",
+        recommendations: [],
+        smart_reply: "Smart reply suggestions unavailable."
       }
     });
   } catch (err) {

@@ -85,33 +85,82 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
   }
 
   const orderDate = new Date(shopifyOrder.created_at || Date.now()).toISOString().slice(0, 19).replace('T', ' ');
+  const orderNumber = shopifyOrder.order_number || shopifyOrder.name || shopifyId;
+  const totalPrice = parseFloat(shopifyOrder.total_price || 0);
+  const currency = shopifyOrder.currency || "INR";
+  const financialStatus = shopifyOrder.financial_status || "pending";
+  const fulfillmentStatus = shopifyOrder.fulfillment_status || "unfulfilled";
+  const tags = shopifyOrder.tags || "";
+  
+  // Extract tracking number if available (from fulfillments)
+  let trackingNumber = null;
+  if (shopifyOrder.fulfillments && shopifyOrder.fulfillments.length > 0) {
+    trackingNumber = shopifyOrder.fulfillments[0].tracking_number || shopifyOrder.fulfillments[0].tracking_company || null;
+  }
+
+  // 2. Upsert into shopify_orders
+  const existingOrder = await db.get("SELECT id FROM shopify_orders WHERE id = ?", shopifyId);
+  if (existingOrder) {
+    await db.run(
+      `UPDATE shopify_orders SET total_price = ?, currency = ?, financial_status = ?, fulfillment_status = ?, tags = ?, updated_at = NOW() WHERE id = ?`,
+      totalPrice, currency, financialStatus, fulfillmentStatus, tags, shopifyId
+    );
+  } else {
+    await db.run(
+      `INSERT INTO shopify_orders (id, crm_customer_id, brand_id, order_number, total_price, currency, financial_status, fulfillment_status, tags, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      shopifyId, crmCustomerId, brandId, orderNumber, totalPrice, currency, financialStatus, fulfillmentStatus, tags, orderDate
+    );
+    
+    // Add timeline event only for new orders
+    await db.run(
+      "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description) VALUES (?, ?, ?, ?, ?)",
+      "te_" + nanoid(10), crmCustomerId, orderDate, "Order Placed", `Order #${orderNumber} placed via Shopify`
+    );
+  }
 
   if (!shopifyOrder.line_items || shopifyOrder.line_items.length === 0) {
     return shopifyId;
   }
 
-  // Get current line items for this order to handle removals
-  const currentItems = await db.all("SELECT shopify_line_item_id FROM purchase_history WHERE order_ref = ?", shopifyId);
-  const currentItemIds = currentItems.map(i => i.shopify_line_item_id);
-  
+  // 3. Upsert into shopify_order_items and purchase_history
   const incomingItemIds = shopifyOrder.line_items.map(item => String(item.id));
 
   // Remove items that are no longer in the order
-  const toRemove = currentItemIds.filter(id => !incomingItemIds.includes(id));
-  for (const removeId of toRemove) {
-    await db.run("DELETE FROM purchase_history WHERE shopify_line_item_id = ?", removeId);
+  const currentItems = await db.all("SELECT id, shopify_line_item_id FROM purchase_history WHERE order_ref = ?", shopifyId);
+  for (const row of currentItems) {
+    if (!incomingItemIds.includes(row.shopify_line_item_id)) {
+      await db.run("DELETE FROM purchase_history WHERE shopify_line_item_id = ?", row.shopify_line_item_id);
+      await db.run("DELETE FROM shopify_order_items WHERE id = ?", row.shopify_line_item_id);
+    }
   }
 
-  // Upsert incoming items
   for (const item of shopifyOrder.line_items) {
     const lineItemId = String(item.id);
+    const productId = item.product_id ? String(item.product_id) : null;
+    const variantId = item.variant_id ? String(item.variant_id) : null;
+    const sku = item.sku || "";
     const productName = item.name || item.title || 'Unknown Product';
     const quantity = parseInt(item.quantity || 1);
     const amount = parseFloat(item.price || 0);
 
-    const exists = await db.get("SELECT id FROM purchase_history WHERE shopify_line_item_id = ?", lineItemId);
-    
-    if (exists) {
+    // Upsert shopify_order_items
+    const existingShopifyItem = await db.get("SELECT id FROM shopify_order_items WHERE id = ?", lineItemId);
+    if (existingShopifyItem) {
+      await db.run(
+        "UPDATE shopify_order_items SET product_id = ?, variant_id = ?, sku = ?, name = ?, quantity = ?, price = ? WHERE id = ?",
+        productId, variantId, sku, productName, quantity, amount, lineItemId
+      );
+    } else {
+      await db.run(
+        "INSERT INTO shopify_order_items (id, order_id, product_id, variant_id, sku, name, quantity, price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        lineItemId, shopifyId, productId, variantId, sku, productName, quantity, amount
+      );
+    }
+
+    // Upsert purchase_history
+    const existingPhItem = await db.get("SELECT id FROM purchase_history WHERE shopify_line_item_id = ?", lineItemId);
+    if (existingPhItem) {
       await db.run(
         "UPDATE purchase_history SET product_name = ?, quantity = ?, amount = ? WHERE shopify_line_item_id = ?",
         productName, quantity, amount, lineItemId
@@ -124,6 +173,19 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
       );
     }
   }
+
+  // 4. Update customer LTV and Last Order Date
+  // Calculate LTV by summing all valid purchase_history amounts for this customer
+  const ltvResult = await db.get(
+    "SELECT SUM(amount * quantity) as total FROM purchase_history WHERE customer_id = ?", 
+    crmCustomerId
+  );
+  const newLtv = ltvResult?.total || 0;
+  
+  await db.run(
+    "UPDATE customers SET ltv = ?, last_order_date = ? WHERE id = ?",
+    newLtv, orderDate, crmCustomerId
+  );
 
   return shopifyId;
 }
