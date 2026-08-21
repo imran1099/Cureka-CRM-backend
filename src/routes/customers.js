@@ -569,11 +569,17 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
     );
     
     const shopifyOrdersRaw = await db.all(
-      `SELECT o.id, o.order_number, o.total_price, o.currency, o.financial_status, o.fulfillment_status, o.created_at, o.tags,
+      `SELECT o.id, o.order_number, o.total_price, o.currency, o.financial_status, o.fulfillment_status, o.status, o.cancelled_at, o.cancel_reason, o.created_at, o.tags,
               i.id as item_id, i.name as product_name, i.quantity, i.price as amount, i.sku
        FROM shopify_orders o 
        LEFT JOIN shopify_order_items i ON o.id = i.order_id 
        WHERE o.crm_customer_id = ? ORDER BY o.created_at DESC`,
+      req.params.id
+    );
+
+    const abandonedCheckouts = await db.all(
+      `SELECT id, checkout_token, total_price, currency, line_items, abandoned_checkout_url, status, created_at, recovered_at 
+       FROM abandoned_checkouts WHERE crm_customer_id = ? ORDER BY created_at DESC`,
       req.params.id
     );
 
@@ -588,6 +594,9 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
           source: "Shopify",
           financial_status: row.financial_status,
           fulfillment_status: row.fulfillment_status,
+          status: row.status,
+          cancelled_at: row.cancelled_at,
+          cancel_reason: row.cancel_reason,
           total_price: row.total_price,
           currency: row.currency,
           tags: row.tags,
@@ -620,6 +629,7 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
         source: "CRM",
         financial_status: "Paid", // Default for manual
         fulfillment_status: "Delivered",
+        status: "active",
         total_price: m.amount * (m.quantity || 1),
         currency: "INR",
         line_items: [{
@@ -747,6 +757,7 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
         last_purchase_date: unifiedOrders.length > 0 ? unifiedOrders[0].order_date : null
       },
       orders: unifiedOrders,
+      abandoned_checkouts: abandonedCheckouts,
       communication: {
         calls,
         notes,

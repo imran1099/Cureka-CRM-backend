@@ -98,24 +98,44 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
     trackingNumber = shopifyOrder.fulfillments[0].tracking_number || shopifyOrder.fulfillments[0].tracking_company || null;
   }
 
+  const cancelledAt = shopifyOrder.cancelled_at ? new Date(shopifyOrder.cancelled_at).toISOString().slice(0, 19).replace('T', ' ') : null;
+  const cancelReason = shopifyOrder.cancel_reason || null;
+  let status = 'active';
+  if (cancelledAt) status = 'cancelled';
+
   // 2. Upsert into shopify_orders
   const existingOrder = await db.get("SELECT id FROM shopify_orders WHERE id = ?", shopifyId);
   if (existingOrder) {
     await db.run(
-      `UPDATE shopify_orders SET total_price = ?, currency = ?, financial_status = ?, fulfillment_status = ?, tags = ?, updated_at = NOW() WHERE id = ?`,
-      totalPrice, currency, financialStatus, fulfillmentStatus, tags, shopifyId
+      `UPDATE shopify_orders SET total_price = ?, currency = ?, financial_status = ?, fulfillment_status = ?, status = ?, cancelled_at = ?, cancel_reason = ?, tags = ?, updated_at = NOW() WHERE id = ?`,
+      totalPrice, currency, financialStatus, fulfillmentStatus, status, cancelledAt, cancelReason, tags, shopifyId
     );
+    if (!existingOrder.cancelled_at && cancelledAt) {
+      await db.run(
+        "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, source_system) VALUES (?, ?, ?, ?, ?, ?)",
+        "te_" + nanoid(10), crmCustomerId, cancelledAt, "order_cancelled", `Order #${orderNumber} cancelled via Shopify (Reason: ${cancelReason || 'N/A'})`, "shopify"
+      );
+    }
   } else {
     await db.run(
-      `INSERT INTO shopify_orders (id, crm_customer_id, brand_id, order_number, total_price, currency, financial_status, fulfillment_status, tags, created_at, updated_at) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      shopifyId, crmCustomerId, brandId, orderNumber, totalPrice, currency, financialStatus, fulfillmentStatus, tags, orderDate
+      `INSERT INTO shopify_orders (id, crm_customer_id, brand_id, order_number, total_price, currency, financial_status, fulfillment_status, status, cancelled_at, cancel_reason, tags, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      shopifyId, crmCustomerId, brandId, orderNumber, totalPrice, currency, financialStatus, fulfillmentStatus, status, cancelledAt, cancelReason, tags, orderDate
     );
     
     // Add timeline event only for new orders
     await db.run(
-      "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description) VALUES (?, ?, ?, ?, ?)",
-      "te_" + nanoid(10), crmCustomerId, orderDate, "Order Placed", `Order #${orderNumber} placed via Shopify`
+      "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, source_system) VALUES (?, ?, ?, ?, ?, ?)",
+      "te_" + nanoid(10), crmCustomerId, orderDate, "order_placed", `Order #${orderNumber} placed via Shopify`, "shopify"
+    );
+  }
+
+  // Recover abandoned checkout if applicable
+  const checkoutToken = shopifyOrder.checkout_token;
+  if (checkoutToken) {
+    await db.run(
+      "UPDATE abandoned_checkouts SET status = 'recovered', shopify_order_id = ?, recovered_at = NOW(), updated_at = NOW() WHERE checkout_token = ?",
+      shopifyId, checkoutToken
     );
   }
 
@@ -162,14 +182,14 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
     const existingPhItem = await db.get("SELECT id FROM purchase_history WHERE shopify_line_item_id = ?", lineItemId);
     if (existingPhItem) {
       await db.run(
-        "UPDATE purchase_history SET product_name = ?, quantity = ?, amount = ? WHERE shopify_line_item_id = ?",
-        productName, quantity, amount, lineItemId
+        "UPDATE purchase_history SET product_name = ?, quantity = ?, amount = ?, status = ? WHERE shopify_line_item_id = ?",
+        productName, quantity, amount, status, lineItemId
       );
     } else {
       await db.run(
-        `INSERT INTO purchase_history (id, customer_id, order_date, product_name, quantity, amount, order_ref, shopify_line_item_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        "ph_" + nanoid(10), crmCustomerId, orderDate, productName, quantity, amount, shopifyId, lineItemId
+        `INSERT INTO purchase_history (id, customer_id, order_date, product_name, quantity, amount, order_ref, shopify_line_item_id, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        "ph_" + nanoid(10), crmCustomerId, orderDate, productName, quantity, amount, shopifyId, lineItemId, status
       );
     }
   }
@@ -177,7 +197,7 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
   // 4. Update customer LTV and Last Order Date
   // Calculate LTV by summing all valid purchase_history amounts for this customer
   const ltvResult = await db.get(
-    "SELECT SUM(amount * quantity) as total FROM purchase_history WHERE customer_id = ?", 
+    "SELECT SUM(amount * quantity) as total FROM purchase_history WHERE customer_id = ? AND status = 'active'", 
     crmCustomerId
   );
   const newLtv = ltvResult?.total || 0;
@@ -239,4 +259,129 @@ export async function syncProduct(storeId, shopifyProduct, brandId) {
   }
 
   return shopifyId;
+}
+
+/**
+ * Syncs an Abandoned Checkout.
+ */
+export async function syncCheckout(storeId, payload, brandId) {
+  if (!payload || (!payload.token && !payload.id)) return null;
+  const token = payload.token || String(payload.id);
+  
+  // Ignore completed checkouts
+  if (payload.completed_at) return null;
+
+  // Try to sync/find customer
+  let crmCustomerId = null;
+  if (payload.customer) {
+    crmCustomerId = await syncCustomer(storeId, payload.customer, brandId);
+  } else if (payload.email || payload.phone) {
+    // If no customer object but email/phone provided in checkout
+    const email = payload.email?.toLowerCase().trim() || null;
+    let phone = payload.phone || payload.shipping_address?.phone || payload.billing_address?.phone || null;
+    if (phone) phone = phone.replace(/\s+/g, '');
+
+    if (email) {
+      const match = await db.get("SELECT id FROM customers WHERE email = ?", email);
+      if (match) crmCustomerId = match.id;
+    }
+    if (!crmCustomerId && phone) {
+      const match = await db.get("SELECT id FROM customers WHERE phone = ?", phone);
+      if (match) crmCustomerId = match.id;
+    }
+  }
+
+  const email = payload.email || null;
+  const phone = payload.phone || payload.shipping_address?.phone || payload.billing_address?.phone || null;
+  
+  let customerName = 'Guest';
+  if (payload.customer) {
+    customerName = `${payload.customer.first_name || ''} ${payload.customer.last_name || ''}`.trim() || 'Guest';
+  } else if (payload.shipping_address) {
+    customerName = `${payload.shipping_address.first_name || ''} ${payload.shipping_address.last_name || ''}`.trim() || 'Guest';
+  }
+
+  const totalPrice = parseFloat(payload.total_price || 0);
+  const currency = payload.currency || "INR";
+  const lineItems = payload.line_items ? JSON.stringify(payload.line_items) : null;
+  const shippingAddress = payload.shipping_address ? JSON.stringify(payload.shipping_address) : null;
+  const billingAddress = payload.billing_address ? JSON.stringify(payload.billing_address) : null;
+  const abandonedCheckoutUrl = payload.abandoned_checkout_url || null;
+  const createdAt = payload.created_at ? new Date(payload.created_at).toISOString().slice(0, 19).replace('T', ' ') : new Date().toISOString().slice(0, 19).replace('T', ' ');
+  
+  const existingCheckout = await db.get("SELECT id FROM abandoned_checkouts WHERE checkout_token = ?", token);
+
+  if (existingCheckout) {
+    await db.run(
+      `UPDATE abandoned_checkouts 
+       SET crm_customer_id = COALESCE(crm_customer_id, ?), email = ?, phone = ?, customer_name = ?, 
+           total_price = ?, currency = ?, line_items = ?, shipping_address = ?, billing_address = ?, 
+           abandoned_checkout_url = ?, updated_at = NOW() 
+       WHERE checkout_token = ?`,
+      crmCustomerId, email, phone, customerName, totalPrice, currency, lineItems, shippingAddress, billingAddress, abandonedCheckoutUrl, token
+    );
+  } else {
+    const id = "chk_" + nanoid(12);
+    await db.run(
+      `INSERT INTO abandoned_checkouts 
+       (id, checkout_token, brand_id, crm_customer_id, email, phone, customer_name, total_price, currency, line_items, shipping_address, billing_address, abandoned_checkout_url, created_at, updated_at) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      id, token, brandId, crmCustomerId, email, phone, customerName, totalPrice, currency, lineItems, shippingAddress, billingAddress, abandonedCheckoutUrl, createdAt
+    );
+
+    if (crmCustomerId) {
+      await db.run(
+        "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, source_system) VALUES (?, ?, ?, ?, ?, ?)",
+        "te_" + nanoid(10), crmCustomerId, createdAt, "checkout_abandoned", `Abandoned Checkout (Total: ${currency} ${totalPrice})`, "shopify"
+      );
+    }
+  }
+
+  return token;
+}
+
+/**
+ * Syncs a Shopify Refund.
+ */
+export async function syncRefund(storeId, payload, brandId) {
+  if (!payload || !payload.order_id) return null;
+  const orderId = String(payload.order_id);
+
+  const existingOrder = await db.get("SELECT id, crm_customer_id FROM shopify_orders WHERE id = ?", orderId);
+  if (!existingOrder) {
+    console.warn(`Refund for unknown order ${orderId}`);
+    return null;
+  }
+  
+  const crmCustomerId = existingOrder.crm_customer_id;
+  
+  await db.run(
+    "UPDATE shopify_orders SET financial_status = 'refunded', status = 'refunded', updated_at = NOW() WHERE id = ?",
+    orderId
+  );
+  
+  await db.run(
+    "UPDATE purchase_history SET status = 'refunded' WHERE order_ref = ?",
+    orderId
+  );
+
+  const ltvResult = await db.get(
+    "SELECT SUM(amount * quantity) as total FROM purchase_history WHERE customer_id = ? AND status = 'active'", 
+    crmCustomerId
+  );
+  const newLtv = ltvResult?.total || 0;
+  
+  await db.run(
+    "UPDATE customers SET ltv = ?, updated_at = NOW() WHERE id = ?",
+    newLtv, crmCustomerId
+  );
+
+  const refundDate = payload.created_at ? new Date(payload.created_at).toISOString().slice(0, 19).replace('T', ' ') : new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+  await db.run(
+    "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, source_system) VALUES (?, ?, ?, ?, ?, ?)",
+    "te_" + nanoid(10), crmCustomerId, refundDate, "order_refunded", `Order Refunded via Shopify`, "shopify"
+  );
+  
+  return orderId;
 }

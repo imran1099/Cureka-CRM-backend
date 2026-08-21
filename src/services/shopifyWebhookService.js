@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { db } from "../db/connection.js";
 import { nanoid } from "nanoid";
-import { syncCustomer, syncOrder, syncProduct } from "./shopifySyncService.js";
+import { syncCustomer, syncOrder, syncProduct, syncCheckout, syncRefund } from "./shopifySyncService.js";
 
 /**
  * Validates the Shopify Webhook HMAC signature.
@@ -70,8 +70,17 @@ async function processWebhookEvent(event) {
     case "products/update":
       await syncProduct(store_id, payload, brandId);
       break;
+
+    case "checkouts/create":
+    case "checkouts/update":
+      await syncCheckout(store_id, payload, brandId);
+      break;
+
+    case "refunds/create":
+      await syncRefund(store_id, payload, brandId);
+      break;
       
-    // Future expansion: inventory/update, refunds/create, etc.
+    // Future expansion: inventory/update, etc.
     default:
       console.log(`Unhandled Shopify webhook topic: ${topic}`);
       break;

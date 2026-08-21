@@ -173,6 +173,7 @@ export async function initSchema() {
       amount DOUBLE NOT NULL DEFAULT 0,
       order_ref VARCHAR(255),
       shopify_line_item_id VARCHAR(255),
+      status VARCHAR(50) DEFAULT 'active',
       FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
       KEY idx_purchase_history_customer (customer_id)
     )
@@ -1005,12 +1006,15 @@ async function migrateExistingColumns() {
     }
   }
 
-  // Ensure purchase_history has shopify_line_item_id
+  // Ensure purchase_history has shopify_line_item_id and status
   const [phCols] = await pool.query(
     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'purchase_history'"
   );
   if (!phCols.map(c => c.COLUMN_NAME).includes('shopify_line_item_id')) {
     await pool.query('ALTER TABLE purchase_history ADD COLUMN shopify_line_item_id VARCHAR(255)');
+  }
+  if (!phCols.map(c => c.COLUMN_NAME).includes('status')) {
+    await pool.query("ALTER TABLE purchase_history ADD COLUMN status VARCHAR(50) DEFAULT 'active'");
   }
 
   const [callCols] = await pool.query(
@@ -1648,11 +1652,40 @@ export async function initShopifySchema() {
       currency VARCHAR(10),
       financial_status VARCHAR(50),
       fulfillment_status VARCHAR(50),
+      status VARCHAR(50),
+      cancelled_at DATETIME,
+      cancel_reason VARCHAR(255),
       tags TEXT,
       created_at DATETIME NOT NULL,
       updated_at DATETIME NOT NULL,
       FOREIGN KEY (crm_customer_id) REFERENCES customers(id) ON DELETE CASCADE,
       FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS abandoned_checkouts (
+      id VARCHAR(255) PRIMARY KEY,
+      checkout_token VARCHAR(255) UNIQUE NOT NULL,
+      brand_id VARCHAR(255),
+      crm_customer_id VARCHAR(255),
+      email VARCHAR(255),
+      phone VARCHAR(255),
+      customer_name VARCHAR(255),
+      total_price DOUBLE,
+      currency VARCHAR(10),
+      line_items JSON,
+      shipping_address JSON,
+      billing_address JSON,
+      abandoned_checkout_url TEXT,
+      status VARCHAR(50) DEFAULT 'abandoned',
+      shopify_order_id VARCHAR(255),
+      recovered_at DATETIME,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (crm_customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (brand_id) REFERENCES brands(id) ON DELETE CASCADE,
+      KEY idx_abandoned_checkout_token (checkout_token)
     )
   `);
 
@@ -1730,6 +1763,22 @@ export async function initShopifySchema() {
       // Make access_token nullable for backward compatibility
       await pool.query(`ALTER TABLE shopify_stores MODIFY COLUMN access_token VARCHAR(255) NULL`);
     }
+
+    const [orderCols] = await pool.query(
+      "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shopify_orders'"
+    );
+    const existingOrderCols = orderCols.map((c) => c.COLUMN_NAME);
+
+    if (!existingOrderCols.includes('status')) {
+      await pool.query(`ALTER TABLE shopify_orders ADD COLUMN status VARCHAR(50)`);
+    }
+    if (!existingOrderCols.includes('cancelled_at')) {
+      await pool.query(`ALTER TABLE shopify_orders ADD COLUMN cancelled_at DATETIME`);
+    }
+    if (!existingOrderCols.includes('cancel_reason')) {
+      await pool.query(`ALTER TABLE shopify_orders ADD COLUMN cancel_reason VARCHAR(255)`);
+    }
+
   } catch (err) {
     console.error("Error updating shopify_stores table:", err);
   }
