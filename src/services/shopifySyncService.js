@@ -104,7 +104,7 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
   if (cancelledAt) status = 'cancelled';
 
   // 2. Upsert into shopify_orders
-  const existingOrder = await db.get("SELECT id FROM shopify_orders WHERE id = ?", shopifyId);
+  const existingOrder = await db.get("SELECT id, cancelled_at FROM shopify_orders WHERE id = ?", shopifyId);
   if (existingOrder) {
     await db.run(
       `UPDATE shopify_orders SET total_price = ?, currency = ?, financial_status = ?, fulfillment_status = ?, status = ?, cancelled_at = ?, cancel_reason = ?, tags = ?, updated_at = NOW() WHERE id = ?`,

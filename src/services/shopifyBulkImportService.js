@@ -51,6 +51,8 @@ export async function startBulkImport(storeId, entityType) {
               tags
               createdAt
               updatedAt
+              cancelledAt
+              cancelReason
               customer {
                 id
                 email
@@ -236,6 +238,13 @@ async function processBulkData(url, store, logId, entityType) {
               id: node.id.split('/').pop(),
               order_number: node.name,
               created_at: node.createdAt,
+              total_price: node.totalPriceSet?.shopMoney?.amount || 0,
+              currency: node.totalPriceSet?.shopMoney?.currencyCode || 'INR',
+              financial_status: node.displayFinancialStatus?.toLowerCase() || 'pending',
+              fulfillment_status: node.displayFulfillmentStatus?.toLowerCase() || 'unfulfilled',
+              tags: (node.tags || []).join(', '),
+              cancelled_at: node.cancelledAt,
+              cancel_reason: node.cancelReason,
               customer: node.customer ? {
                  id: node.customer.id.split('/').pop(),
                  email: node.customer.email,
