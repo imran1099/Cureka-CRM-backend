@@ -207,7 +207,18 @@ router.get("/", requireBrandAccess, async (req, res, next) => {
     const countQuery = `SELECT COUNT(DISTINCT customers.id) as total FROM customers ${brandFilter.join} ${conditionSql}`;
     const { total } = await db.get(countQuery, ...params);
 
-    const sql = `SELECT customers.* FROM customers ${brandFilter.join} ${conditionSql} GROUP BY customers.id ORDER BY customers.${sortField} ${sortDir} LIMIT ${limitNum} OFFSET ${offset}`;
+    const sql = `
+      SELECT 
+        customers.*,
+        (SELECT GROUP_CONCAT(DISTINCT order_ref SEPARATOR ', ') FROM purchase_history WHERE customer_id = customers.id AND status = 'active') as order_ids,
+        (SELECT COUNT(*) FROM abandoned_checkouts WHERE crm_customer_id = customers.id AND status = 'abandoned') as abandoned_cart_count
+      FROM customers 
+      ${brandFilter.join} 
+      ${conditionSql} 
+      GROUP BY customers.id 
+      ORDER BY customers.${sortField} ${sortDir} 
+      LIMIT ${limitNum} OFFSET ${offset}
+    `;
 
     const rows = await db.all(sql, ...params);
     const rowsWithCall = await Promise.all(rows.map(withLatestCall));

@@ -112,8 +112,8 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
     );
     if (!existingOrder.cancelled_at && cancelledAt) {
       await db.run(
-        "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, source_system) VALUES (?, ?, ?, ?, ?, ?)",
-        "te_" + nanoid(10), crmCustomerId, cancelledAt, "order_cancelled", `Order #${orderNumber} cancelled via Shopify (Reason: ${cancelReason || 'N/A'})`, "shopify"
+        "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+        "te_" + nanoid(10), crmCustomerId, cancelledAt, "order_cancelled", `Order #${orderNumber} cancelled via Shopify (Reason: ${cancelReason || 'N/A'})`, JSON.stringify({ source_system: 'shopify', order_id: shopifyId })
       );
     }
   } else {
@@ -125,8 +125,8 @@ export async function syncOrder(storeId, shopifyOrder, brandId) {
     
     // Add timeline event only for new orders
     await db.run(
-      "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, source_system) VALUES (?, ?, ?, ?, ?, ?)",
-      "te_" + nanoid(10), crmCustomerId, orderDate, "order_placed", `Order #${orderNumber} placed via Shopify`, "shopify"
+      "INSERT INTO customer_timeline_events (id, customer_id, event_date, event_type, description, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+      "te_" + nanoid(10), crmCustomerId, orderDate, "order_placed", `Order #${orderNumber} placed via Shopify`, JSON.stringify({ source_system: 'shopify', order_id: shopifyId })
     );
   }
 
