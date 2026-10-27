@@ -236,6 +236,167 @@ router.get("/", requireBrandAccess, async (req, res, next) => {
   }
 });
 
+// GET /api/customers/sample-csv — download sample CSV template for bulk import
+router.get("/sample-csv", (req, res) => {
+  const csvHeaders = "name,phone,email,age,gender,city,segment,source,ltv,last_order_date,replenish_due_date,cart_value,cart_items,cart_abandoned_at,health_conditions,product_preferences,allergies_restrictions,preferred_contact_time,preferred_language,household_notes,price_sensitivity,product_name,sku,order_ids";
+  const sampleRow1 = '"Aarav Sharma","+919876543210","aarav.sharma@example.com",34,"male","Mumbai","vip","meta_ads",12500,"2026-09-15","2026-11-15","","","","diabetes; hypertension","Ayurvedic supplements; Omega-3","None","evening","English","Prefers doorstep delivery","moderate","Daily Multivitamin 60s","DMV-60","ORD-9821, ORD-10244"';
+  const sampleRow2 = '"Priya Patel","+919812345678","priya.p@example.com",29,"female","Ahmedabad","abandoned_cart","google_ads",0,"","","2499","Skin Glow Serum 30ml","2026-10-20 14:30:00","acne; dry skin","Organic skincare; Sunscreen","Gluten allergy","morning","Hindi","Family of 3","budget","Skin Glow Serum","SGS-30",""';
+  const sampleRow3 = '"Rohan Verma","+919988776655","rohan.v@example.com",42,"male","Delhi","repeat_customer","referral",4500,"2026-10-05","2026-11-05","","","","joint pain","Joint Care Balm; Calcium Tablets","Dust allergy","afternoon","English","","high_value","Joint Care Balm 100g","JCB-100","ORD-11502"';
+
+  const csvContent = [csvHeaders, sampleRow1, sampleRow2, sampleRow3].join("\r\n");
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="customer_bulk_import_sample.csv"');
+  res.status(200).send(csvContent);
+});
+
+// POST /api/customers/bulk — bulk import customer records
+router.post("/bulk", requireBrandAccess, async (req, res, next) => {
+  try {
+    const { rows, brand_id: bodyBrandId } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: "rows array is required and must not be empty" });
+    }
+
+    const brandId = bodyBrandId || req.query.brand_id || req.user?.brands?.[0] || null;
+    let importedCount = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const name = (row.name || "").trim();
+      const phone = (row.phone || "").trim();
+
+      if (!name || !phone) {
+        errors.push({ row: i + 1, error: "name and phone are required" });
+        continue;
+      }
+
+      try {
+        let id;
+        const exists = await db.get("SELECT id FROM customers WHERE phone = ?", phone);
+        const segment = (row.segment || "new_lead").trim();
+        const source = (row.source || "bulk_import").trim();
+        const ltv = parseFloat(row.ltv) || 0;
+        const age = row.age ? parseInt(row.age, 10) || null : null;
+        const gender = (row.gender || "").trim() || null;
+        const email = (row.email || "").trim() || null;
+        const city = (row.city || "").trim() || null;
+        const lastOrderDate = (row.last_order_date || "").trim() || null;
+        const replenishDueDate = (row.replenish_due_date || "").trim() || null;
+        const cartValue = row.cart_value ? parseFloat(row.cart_value) || null : null;
+        const cartItems = (row.cart_items || "").trim() || null;
+        const cartAbandonedAt = (row.cart_abandoned_at || "").trim() || null;
+        const allergies = (row.allergies_restrictions || "").trim() || null;
+        const preferredContactTime = (row.preferred_contact_time || "").trim() || null;
+        const preferredLanguage = (row.preferred_language || "").trim() || null;
+        const householdNotes = (row.household_notes || "").trim() || null;
+        const priceSensitivity = (row.price_sensitivity || "").trim() || null;
+        const productName = (row.product_name || "").trim() || null;
+        const sku = (row.sku || "").trim() || null;
+        const orderIds = (row.order_ids || "").trim() || null;
+
+        // Parse health conditions
+        let healthConditions = null;
+        if (row.health_conditions) {
+          const list = Array.isArray(row.health_conditions)
+            ? row.health_conditions
+            : String(row.health_conditions).split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+          healthConditions = JSON.stringify(list);
+        }
+
+        // Parse product preferences
+        let productPreferences = null;
+        if (row.product_preferences) {
+          const list = Array.isArray(row.product_preferences)
+            ? row.product_preferences
+            : String(row.product_preferences).split(/[;,]/).map((s) => s.trim()).filter(Boolean);
+          productPreferences = JSON.stringify(list);
+        }
+
+        if (exists) {
+          id = exists.id;
+          await db.run(
+            `UPDATE customers SET
+              name = ?, email = COALESCE(?, email), age = COALESCE(?, age), gender = COALESCE(?, gender),
+              city = COALESCE(?, city), segment = COALESCE(?, segment), source = COALESCE(?, source),
+              ltv = CASE WHEN ? > 0 THEN ? ELSE ltv END,
+              last_order_date = COALESCE(?, last_order_date), replenish_due_date = COALESCE(?, replenish_due_date),
+              cart_value = COALESCE(?, cart_value), cart_items = COALESCE(?, cart_items),
+              cart_abandoned_at = COALESCE(?, cart_abandoned_at),
+              health_conditions = COALESCE(?, health_conditions),
+              product_preferences = COALESCE(?, product_preferences),
+              allergies_restrictions = COALESCE(?, allergies_restrictions),
+              preferred_contact_time = COALESCE(?, preferred_contact_time),
+              preferred_language = COALESCE(?, preferred_language),
+              household_notes = COALESCE(?, household_notes),
+              price_sensitivity = COALESCE(?, price_sensitivity),
+              product_name = COALESCE(?, product_name),
+              sku = COALESCE(?, sku),
+              order_ids = COALESCE(?, order_ids),
+              updated_at = NOW()
+             WHERE id = ?`,
+            name, email, age, gender, city, segment, source,
+            ltv, ltv,
+            lastOrderDate, replenishDueDate,
+            cartValue, cartItems, cartAbandonedAt,
+            healthConditions, productPreferences, allergies,
+            preferredContactTime, preferredLanguage, householdNotes, priceSensitivity,
+            productName, sku, orderIds,
+            id
+          );
+        } else {
+          id = "cust_" + nanoid(10);
+          await db.run(
+            `INSERT INTO customers
+              (id, name, phone, email, age, gender, city, segment, source, ltv, last_order_date, replenish_due_date,
+               cart_value, cart_items, cart_abandoned_at,
+               health_conditions, product_preferences, allergies_restrictions, preferred_contact_time,
+               preferred_language, household_notes, price_sensitivity, product_name, sku, order_ids)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            id, name, phone, email, age, gender, city, segment, source, ltv, lastOrderDate, replenishDueDate,
+            cartValue, cartItems, cartAbandonedAt,
+            healthConditions, productPreferences, allergies, preferredContactTime,
+            preferredLanguage, householdNotes, priceSensitivity, productName, sku, orderIds
+          );
+
+          createTimelineEvent({
+            customerId: id,
+            brandId: brandId,
+            eventType: "customer_registered",
+            eventTitle: `Customer imported via ${source}`,
+            eventDescription: `Segment: ${segment}. Source: ${source}.`,
+            sourceSystem: "customers",
+          }).catch(() => {});
+        }
+
+        if (brandId) {
+          const cbExists = await db.get("SELECT id FROM customer_brands WHERE customer_id = ? AND brand_id = ?", id, brandId);
+          if (!cbExists) {
+            await db.run(
+              "INSERT INTO customer_brands (id, customer_id, brand_id, source) VALUES (?, ?, ?, ?)",
+              "cb_" + nanoid(10), id, brandId, source
+            );
+          }
+        }
+
+        importedCount++;
+      } catch (rowErr) {
+        errors.push({ row: i + 1, error: rowErr.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      imported: importedCount,
+      total: rows.length,
+      errors
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // GET /api/customers/:id
 router.get("/:id", requireBrandAccess, async (req, res, next) => {
   try {
