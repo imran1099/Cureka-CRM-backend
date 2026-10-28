@@ -1,8 +1,24 @@
 import mysql from "mysql2/promise";
 import { nanoid } from "nanoid";
 
+function formatDbUri(uri) {
+  if (!uri) return uri;
+  let clean = uri.replace(/^mysql\+pymysql:\/\//, "mysql://");
+  try {
+    const match = clean.match(/^mysql:\/\/([^:]+):(.*)@([^@\/]+)(:\d+)?\/(.+)$/);
+    if (match) {
+      const [, user, pass, host, port, dbName] = match;
+      if (pass.includes("@") && !pass.includes("%40")) {
+        const encodedPass = encodeURIComponent(pass);
+        clean = `mysql://${user}:${encodedPass}@${host}${port || ""}/${dbName}`;
+      }
+    }
+  } catch (e) {}
+  return clean;
+}
+
 const connectionUri = process.env.DATABASE_URL
-  ? process.env.DATABASE_URL.replace(/^mysql\+pymysql:\/\//, "mysql://")
+  ? formatDbUri(process.env.DATABASE_URL)
   : "mysql://root:root@localhost:3306/cureka_crm";
 // : "mysql://root:root@localhost:3306/cureka_crm_db";
 // : "mysql://root:ioYkajsDqbcsbxCwIKLyLSIRyeLguYvg@hayabusa.proxy.rlwy.net:25408/cureka_crm_db";

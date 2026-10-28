@@ -12,7 +12,7 @@ router.use(requireAuth);
 router.get("/", requirePermission("users", "view"), async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(100, parseInt(req.query.limit) || 15);
+    const limit = Math.min(1000, parseInt(req.query.limit) || 15);
     const offset = (page - 1) * limit;
     const search = req.query.search?.trim() || "";
     const { department_id, role, brand_id, status } = req.query;
@@ -36,7 +36,7 @@ router.get("/", requirePermission("users", "view"), async (req, res, next) => {
       conditions.push("r.slug = ?");
       params.push(role);
     }
-    if (brand_id) {
+    if (brand_id && brand_id !== "all") {
       conditions.push("EXISTS (SELECT 1 FROM agent_brands ab WHERE ab.agent_id = a.id AND ab.brand_id = ?)");
       params.push(brand_id);
     }
@@ -134,6 +134,23 @@ router.get("/me", async (req, res, next) => {
     );
 
     res.json({ user: { ...agent, brands, role: roleRow || null, permissions: permRows.map((r) => r.perm) } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── GET /api/users/assignable — lightweight list of active agents for dropdowns ──
+router.get("/assignable", async (req, res, next) => {
+  try {
+    const users = await db.all(
+      `SELECT a.id, a.name, a.email, r.slug as role_slug, r.name as role_name
+       FROM agents a
+       LEFT JOIN user_role_mapping urm ON urm.agent_id = a.id
+       LEFT JOIN roles r ON r.id = urm.role_id
+       WHERE a.active = 1 AND (a.employment_status = 'active' OR a.employment_status IS NULL)
+       ORDER BY a.name ASC`
+    );
+    res.json({ users });
   } catch (err) {
     next(err);
   }
@@ -244,11 +261,14 @@ router.post("/", requirePermission("users", "create"), async (req, res, next) =>
       );
     }
 
-    // Assign brands
-    if (brand_ids?.length) {
-      for (const bid of brand_ids) {
-        await db.run("INSERT IGNORE INTO agent_brands (agent_id, brand_id) VALUES (?, ?)", id, bid);
-      }
+    // Assign brands: if brand_ids specified, use them; otherwise default to all active brands
+    let targetBrandIds = brand_ids;
+    if (!Array.isArray(targetBrandIds) || targetBrandIds.length === 0) {
+      const activeBrands = await db.all("SELECT id FROM brands WHERE status = 'active'");
+      targetBrandIds = activeBrands.map((b) => b.id);
+    }
+    for (const bid of targetBrandIds) {
+      await db.run("INSERT IGNORE INTO agent_brands (agent_id, brand_id) VALUES (?, ?)", id, bid);
     }
 
     const { ip, device } = getRequestMeta(req);
