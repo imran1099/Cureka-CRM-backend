@@ -49,7 +49,7 @@ async function getTags(customerId) {
 // GET /api/customers/queue — today's ranked call queue
 router.get("/queue", requireBrandAccess, async (req, res, next) => {
   try {
-    const { segment, agentId } = req.query;
+    const { segment, agentId, page, limit } = req.query;
     const isManagement = ["admin", "general_manager", "operations_manager"].includes(req.user.role);
 
     const brandFilter = getBrandCondition(req, "customers");
@@ -86,7 +86,23 @@ router.get("/queue", requireBrandAccess, async (req, res, next) => {
       .filter((c) => c.score > -1000)
       .sort((a, b) => b.score - a.score);
 
-    res.json({ queue: ranked, count: ranked.length, generatedAt: new Date().toISOString() });
+    const total = ranked.length;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const isAll = limit === "all";
+    const limitNum = isAll ? (total || 1) : Math.max(1, parseInt(limit, 10) || 50);
+    const offset = (pageNum - 1) * limitNum;
+    const paginatedQueue = isAll ? ranked : ranked.slice(offset, offset + limitNum);
+    const totalPages = isAll ? 1 : Math.max(1, Math.ceil(total / limitNum));
+
+    res.json({
+      queue: paginatedQueue,
+      total,
+      count: paginatedQueue.length,
+      page: pageNum,
+      limit: isAll ? total : limitNum,
+      totalPages,
+      generatedAt: new Date().toISOString()
+    });
   } catch (err) {
     next(err);
   }
