@@ -347,9 +347,9 @@ router.post("/bulk", requireBrandAccess, async (req, res, next) => {
               preferred_language = COALESCE(?, preferred_language),
               household_notes = COALESCE(?, household_notes),
               price_sensitivity = COALESCE(?, price_sensitivity),
-              product_name = COALESCE(?, product_name),
-              sku = COALESCE(?, sku),
-              order_ids = COALESCE(?, order_ids),
+              product_name = IF(? IS NOT NULL, ?, product_name),
+              sku = IF(? IS NOT NULL, ?, sku),
+              order_ids = IF(? IS NOT NULL, ?, order_ids),
               updated_at = NOW()
              WHERE id = ?`,
             name, email, age, gender, city, segment, source,
@@ -358,7 +358,7 @@ router.post("/bulk", requireBrandAccess, async (req, res, next) => {
             cartValue, cartItems, cartAbandonedAt,
             healthConditions, productPreferences, allergies,
             preferredContactTime, preferredLanguage, householdNotes, priceSensitivity,
-            productName, sku, orderIds,
+            productName, productName, sku, sku, orderIds, orderIds,
             id
           );
         } else {
@@ -393,6 +393,40 @@ router.post("/bulk", requireBrandAccess, async (req, res, next) => {
               "INSERT INTO customer_brands (id, customer_id, brand_id, source) VALUES (?, ?, ?, ?)",
               "cb_" + nanoid(10), id, brandId, source
             );
+          }
+        }
+
+        // ── Create purchase_history rows from CSV order fields ──────────
+        // If product_name or order_ids provided, insert into purchase_history
+        // so the Orders tab shows history. Split order_ids by comma/semicolon
+        // to support multiple order references in one CSV cell.
+        if (productName || orderIds) {
+          const orderRefs = orderIds
+            ? orderIds.split(/[,;]/).map(s => s.trim()).filter(Boolean)
+            : [null];
+
+          for (const orderRef of orderRefs) {
+            // Avoid duplicate rows for the same customer + order_ref
+            const phKey = orderRef
+              ? await db.get(
+                  "SELECT id FROM purchase_history WHERE customer_id = ? AND order_ref = ?",
+                  id, orderRef
+                )
+              : null;
+
+            if (!phKey) {
+              await db.run(
+                `INSERT INTO purchase_history (id, customer_id, order_date, product_name, quantity, amount, order_ref, brand_id)
+                 VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+                "ph_" + nanoid(10),
+                id,
+                lastOrderDate || new Date().toISOString().split("T")[0],
+                productName || "Imported Product",
+                ltv > 0 ? ltv : 0,
+                orderRef || ("CSV-" + nanoid(6)),
+                brandId || null
+              );
+            }
           }
         }
 
