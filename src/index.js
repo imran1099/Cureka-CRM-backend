@@ -28,6 +28,7 @@ import pikfRoutes from "./routes/pikf.js";
 import bawoeRoutes from "./routes/bawoe.js";
 import unccRoutes from "./routes/uncc.js";
 import bobRoutes from "./routes/bob.js";
+import ordersRoutes from "./routes/orders.js";
 import { checkEscalations } from "./services/followupService.js";
 import { checkEscalations as checkUNCCEscalations } from "./services/unccService.js";
 import { processShopifyQueue } from "./services/shopifyWebhookService.js";
@@ -91,6 +92,7 @@ app.use("/api/pikf", pikfRoutes);
 app.use("/api/bawoe", bawoeRoutes);
 app.use("/api/uncc", unccRoutes);
 app.use("/api/bob", bobRoutes);
+app.use("/api/orders", ordersRoutes);
 
 // IAM routes
 app.use("/api/users", usersRoutes);

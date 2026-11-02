@@ -785,7 +785,7 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
 
     // 1. Orders & Purchases
     const manualOrders = await db.all(
-      `SELECT id, order_date, product_name, quantity, amount, order_ref
+      `SELECT id, order_date, product_name, quantity, amount, order_ref, status
        FROM purchase_history WHERE customer_id = ? AND shopify_line_item_id IS NULL ORDER BY order_date DESC`,
       req.params.id
     );
@@ -850,8 +850,8 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
         order_date: m.order_date,
         source: "CRM",
         financial_status: "Paid", // Default for manual
-        fulfillment_status: "Delivered",
-        status: "active",
+        fulfillment_status: m.status || "Delivered",
+        status: m.status || "active",
         total_price: m.amount * (m.quantity || 1),
         currency: "INR",
         line_items: [{

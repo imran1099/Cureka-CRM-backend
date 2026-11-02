@@ -1,5 +1,6 @@
 import mysql from "mysql2/promise";
 import { nanoid } from "nanoid";
+import { runMigration02 } from "./migrations/02_sync_existing_customer_orders_to_purchase_history.js";
 
 function formatDbUri(uri) {
   if (!uri) return uri;
@@ -1213,6 +1214,9 @@ async function migrateExistingColumns() {
   if (existingFupCols.includes("reason")) {
     await pool.query("UPDATE customer_followups SET title = COALESCE(reason, 'Follow-up') WHERE title = 'Follow-up' OR title IS NULL").catch(() => { });
   }
+
+  // Sync existing customer order_ids to purchase_history so orders can be tracked/updated individually
+  await runMigration02();
 }
 
 
