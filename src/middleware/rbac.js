@@ -1,3 +1,6 @@
+import { isManagerOrAdmin } from "../utils/dbHelpers.js";
+import { db } from "../db/connection.js";
+
 /**
  * requireRole(roles[]) — legacy role-based guard (backward-compatible)
  */
@@ -9,6 +12,37 @@ export function requireRole(roles) {
     next();
   };
 }
+
+/**
+ * requireCustomerAccess — strictly enforces that agents can only access
+ * customer records assigned directly to them. Managers and Admins bypass this.
+ * Direct URL access or manual API attempts for non-assigned customers return 403.
+ */
+export async function requireCustomerAccess(req, res, next) {
+  try {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    // Admins and Managers have global customer visibility
+    if (isManagerOrAdmin(req.user)) return next();
+
+    const customerId = req.params.id || req.params.customerId || req.body?.customer_id || req.query?.customer_id;
+    if (!customerId) return next();
+
+    const customer = await db.get("SELECT id, assigned_agent_id FROM customers WHERE id = ?", customerId);
+    if (!customer) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
+    if (customer.assigned_agent_id !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden: You do not have access to this customer" });
+    }
+
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
 
 /**
  * requirePermission(module, action) — permission-matrix-based guard.

@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { db } from "../db/connection.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
-import { getBrandCondition } from "../utils/dbHelpers.js";
+import { getBrandCondition, isManagerOrAdmin } from "../utils/dbHelpers.js";
 import { applySlaRules, autoAssignTicket, logTicketEvent } from "../services/ticketEngine.js";
 import { createTimelineEvent } from "../services/timelineService.js";
 import { processWorkflowRules } from "../services/followupService.js";
@@ -41,7 +41,12 @@ router.get("/", requireBrandAccess, async (req, res, next) => {
       sql += " AND tickets.category_id = ?";
       params.push(category_id);
     }
-    if (assigned_agent_id) {
+
+    if (!isManagerOrAdmin(req.user)) {
+      // Agents can only see tickets assigned to them or tickets for customers assigned to them
+      sql += " AND (tickets.assigned_agent_id = ? OR customers.assigned_agent_id = ?)";
+      params.push(req.user.id, req.user.id);
+    } else if (assigned_agent_id) {
       if (assigned_agent_id === "unassigned") {
         sql += " AND tickets.assigned_agent_id IS NULL";
       } else {
@@ -54,9 +59,14 @@ router.get("/", requireBrandAccess, async (req, res, next) => {
     sql += ` ORDER BY tickets.created_at DESC LIMIT ${limitNum} OFFSET ${offset}`;
     const tickets = await db.all(sql, ...params);
     
-    // Count total
-    const countSql = `SELECT COUNT(*) as total FROM tickets ${brandFilter.join} WHERE ${brandFilter.condition}`;
-    const { total } = await db.get(countSql, ...(brandFilter.params || (brandFilter.param ? [brandFilter.param] : [])));
+    // Count total with same scoping
+    let countSql = `SELECT COUNT(*) as total FROM tickets JOIN customers ON customers.id = tickets.customer_id ${brandFilter.join} WHERE ${brandFilter.condition}`;
+    const countParams = brandFilter.params ? [...brandFilter.params] : (brandFilter.param ? [brandFilter.param] : []);
+    if (!isManagerOrAdmin(req.user)) {
+      countSql += " AND (tickets.assigned_agent_id = ? OR customers.assigned_agent_id = ?)";
+      countParams.push(req.user.id, req.user.id);
+    }
+    const { total } = await db.get(countSql, ...countParams);
 
     res.json({ tickets, total, page: pageNum, totalPages: Math.ceil(total / limitNum) });
   } catch (err) {
@@ -127,6 +137,13 @@ router.get("/:id", requireBrandAccess, async (req, res, next) => {
 
     const ticket = await db.get(sql, ...params);
     if (!ticket) return res.status(404).json({ error: "Ticket not found or access denied" });
+
+    if (!isManagerOrAdmin(req.user)) {
+      const cust = await db.get("SELECT assigned_agent_id FROM customers WHERE id = ?", ticket.customer_id);
+      if (ticket.assigned_agent_id !== req.user.id && cust?.assigned_agent_id !== req.user.id) {
+        return res.status(403).json({ error: "Forbidden: You do not have access to this ticket" });
+      }
+    }
 
     const comments = await db.all("SELECT c.*, a.name as agent_name FROM ticket_comments c LEFT JOIN agents a ON a.id = c.agent_id WHERE c.ticket_id = ? ORDER BY c.created_at ASC", ticket.id);
     const timeline = await db.all("SELECT t.*, a.name as agent_name FROM ticket_timeline t LEFT JOIN agents a ON a.id = t.agent_id WHERE t.ticket_id = ? ORDER BY t.created_at DESC", ticket.id);

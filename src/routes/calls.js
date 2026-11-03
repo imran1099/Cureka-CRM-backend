@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { db } from "../db/connection.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireBrandAccess } from "../middleware/rbac.js";
-import { getBrandCondition } from "../utils/dbHelpers.js";
+import { getBrandCondition, isManagerOrAdmin, getCustomerScopeCondition } from "../utils/dbHelpers.js";
 import { createTimelineEvent } from "../services/timelineService.js";
 import { createFollowup, processWorkflowRules } from "../services/followupService.js";
 
@@ -15,7 +15,9 @@ router.use(requireAuth);
 router.get("/queue", requireBrandAccess, async (req, res, next) => {
   try {
     const brandFilter = getBrandCondition(req, "c");
+    const scopeFilter = getCustomerScopeCondition(req, "c");
     const params = brandFilter.params || (brandFilter.param ? [brandFilter.param] : []);
+    if (scopeFilter.params) params.push(...scopeFilter.params);
 
     // 1. Abandoned Carts (Priority: High)
     const cartsSql = `
@@ -26,6 +28,7 @@ router.get("/queue", requireBrandAccess, async (req, res, next) => {
       WHERE c.cart_abandoned_at IS NOT NULL 
         AND c.cart_abandoned_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
         AND ${brandFilter.condition}
+        AND ${scopeFilter.condition}
     `;
 
     // 2. Pending Follow-ups (Priority: Medium)
@@ -37,6 +40,7 @@ router.get("/queue", requireBrandAccess, async (req, res, next) => {
       ${brandFilter.join}
       WHERE f.status = 'pending' AND f.due_date <= NOW()
         AND ${brandFilter.condition}
+        AND ${scopeFilter.condition}
     `;
 
     // 3. Open Tickets pending call (Priority: Medium-High)
@@ -48,6 +52,7 @@ router.get("/queue", requireBrandAccess, async (req, res, next) => {
       ${brandFilter.join}
       WHERE t.status = 'open' 
         AND ${brandFilter.condition}
+        AND ${scopeFilter.condition}
     `;
 
     // Combine queries (union all)
@@ -95,6 +100,13 @@ router.post("/", requireBrandAccess, async (req, res, next) => {
 
     if (!customer_id || !outcome) {
       return res.status(400).json({ error: "customer_id and outcome are required" });
+    }
+
+    if (!isManagerOrAdmin(req.user)) {
+      const cust = await db.get("SELECT id, assigned_agent_id FROM customers WHERE id = ?", customer_id);
+      if (!cust || cust.assigned_agent_id !== req.user.id) {
+        return res.status(403).json({ error: "Forbidden: You can only log calls for customers assigned to you" });
+      }
     }
 
     const id = "call_" + nanoid(10);

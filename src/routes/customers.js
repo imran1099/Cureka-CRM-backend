@@ -1,12 +1,13 @@
 import express from "express";
 import { nanoid } from "nanoid";
-import { db } from "../db/connection.js";
+import { db, pool } from "../db/connection.js";
 import { requireAuth, requireAdmin } from "../middleware/auth.js";
-import { requireBrandAccess } from "../middleware/rbac.js";
+import { requireBrandAccess, requireCustomerAccess } from "../middleware/rbac.js";
 import { createTimelineEvent } from "../services/timelineService.js";
 import { processWorkflowRules } from "../services/followupService.js";
 import { scoreCustomer, todayStr } from "../utils/ranking.js";
-import { getBrandCondition } from "../utils/dbHelpers.js";
+import { getBrandCondition, isManagerOrAdmin, getCustomerScopeCondition } from "../utils/dbHelpers.js";
+import { parseCsvText } from "./orders.js";
 
 const router = express.Router();
 router.use(requireAuth);
@@ -50,7 +51,7 @@ async function getTags(customerId) {
 router.get("/queue", requireBrandAccess, async (req, res, next) => {
   try {
     const { segment, agentId, page, limit } = req.query;
-    const isManagement = ["admin", "general_manager", "operations_manager"].includes(req.user.role);
+    const isManagement = isManagerOrAdmin(req.user);
 
     const brandFilter = getBrandCondition(req, "customers");
     let sql = `SELECT customers.* FROM customers ${brandFilter.join} WHERE do_not_call = 0 AND ${brandFilter.condition}`;
@@ -62,11 +63,16 @@ router.get("/queue", requireBrandAccess, async (req, res, next) => {
     }
 
     if (!isManagement) {
-      sql += " AND (customers.assigned_agent_id = ? OR customers.assigned_agent_id IS NULL)";
+      // Agents strictly only see their assigned customers
+      sql += " AND customers.assigned_agent_id = ?";
       params.push(req.user.id);
     } else if (agentId && agentId !== "all") {
-      sql += " AND (customers.assigned_agent_id = ? OR customers.assigned_agent_id IS NULL)";
-      params.push(agentId);
+      if (agentId === "unassigned") {
+        sql += " AND (customers.assigned_agent_id IS NULL OR customers.assigned_agent_id = '')";
+      } else {
+        sql += " AND customers.assigned_agent_id = ?";
+        params.push(agentId);
+      }
     }
 
     const rows = await db.all(sql, ...params);
@@ -145,19 +151,17 @@ router.get("/search", requireBrandAccess, async (req, res, next) => {
     }
 
     const searchPattern = `%${q}%`;
-    const brandFilter = getBrandCondition(req, "customers");
+    const brandFilter = getBrandCondition(req, "c");
 
-    const sql = `
+    let sql = `
       SELECT DISTINCT 
-        c.id, c.name, c.phone, c.email, c.segment, c.is_vip, c.customer_type,
-        b.name as brand_name,
+        c.id, c.name, c.phone, c.email, c.segment, (c.segment = 'vip') as is_vip,
         (SELECT COUNT(*) FROM purchase_history p WHERE p.customer_id = c.id) as order_count,
         (SELECT COALESCE(SUM(p.amount), 0) FROM purchase_history p WHERE p.customer_id = c.id) as total_spend,
         (SELECT p.order_date FROM purchase_history p WHERE p.customer_id = c.id ORDER BY p.order_date DESC LIMIT 1) as latest_order_date,
         (SELECT 'Delivered' FROM purchase_history p WHERE p.customer_id = c.id ORDER BY p.order_date DESC LIMIT 1) as latest_order_status
       FROM customers c
       ${brandFilter.join}
-      LEFT JOIN brands b ON b.id = c.brand_id
       LEFT JOIN purchase_history ph ON ph.customer_id = c.id
       LEFT JOIN tickets t ON t.customer_id = c.id
       WHERE (
@@ -165,8 +169,7 @@ router.get("/search", requireBrandAccess, async (req, res, next) => {
         c.phone LIKE ? OR
         c.email LIKE ? OR
         c.id LIKE ? OR
-        c.lead_id LIKE ? OR
-        ph.order_number LIKE ? OR
+        ph.order_ref LIKE ? OR
         ph.id LIKE ? OR
         t.id LIKE ?
       ) AND ${brandFilter.condition}
@@ -175,7 +178,7 @@ router.get("/search", requireBrandAccess, async (req, res, next) => {
 
     const params = [
       searchPattern, searchPattern, searchPattern, searchPattern,
-      searchPattern, searchPattern, searchPattern, searchPattern
+      searchPattern, searchPattern, searchPattern
     ];
 
     if (brandFilter.params) params.push(...brandFilter.params);
@@ -193,7 +196,7 @@ router.get("/search", requireBrandAccess, async (req, res, next) => {
 // GET /api/customers — search / list
 router.get("/", requireBrandAccess, async (req, res, next) => {
   try {
-    const { q, segment, source, page = 1, limit = 50, sortBy = "updated_at", sortOrder = "desc" } = req.query;
+    const { q, segment, source, assigned_agent_id, page = 1, limit = 50, sortBy = "updated_at", sortOrder = "desc" } = req.query;
     
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10) || 50));
@@ -218,6 +221,19 @@ router.get("/", requireBrandAccess, async (req, res, next) => {
     if (source && source !== "all") {
       conditionSql += " AND customers.source = ?";
       params.push(source);
+    }
+
+    if (!isManagerOrAdmin(req.user)) {
+      // Non-managers strictly see only their assigned customers
+      conditionSql += " AND customers.assigned_agent_id = ?";
+      params.push(req.user.id);
+    } else if (assigned_agent_id && assigned_agent_id !== "all") {
+      if (assigned_agent_id === "unassigned") {
+        conditionSql += " AND (customers.assigned_agent_id IS NULL OR customers.assigned_agent_id = '')";
+      } else {
+        conditionSql += " AND customers.assigned_agent_id = ?";
+        params.push(assigned_agent_id);
+      }
     }
 
     const countQuery = `SELECT COUNT(DISTINCT customers.id) as total FROM customers ${brandFilter.join} ${conditionSql}`;
@@ -447,8 +463,356 @@ router.post("/bulk", requireBrandAccess, async (req, res, next) => {
   }
 });
 
+// GET /api/customers/assignment-stats — Customer count per agent and unassigned total
+router.get("/assignment-stats", requireBrandAccess, async (req, res, next) => {
+  try {
+    const brandFilter = getBrandCondition(req, "customers");
+    const whereSql = brandFilter.condition === "1=1" ? "" : `WHERE ${brandFilter.condition}`;
+    const params = brandFilter.params || (brandFilter.param ? [brandFilter.param] : []);
+
+    // Total customers
+    const totalRow = await db.get(
+      `SELECT COUNT(DISTINCT customers.id) as count FROM customers ${brandFilter.join} ${whereSql}`,
+      ...params
+    );
+
+    // Unassigned customers
+    const unassignedRow = await db.get(
+      `SELECT COUNT(DISTINCT customers.id) as count FROM customers ${brandFilter.join} 
+       ${whereSql ? `${whereSql} AND` : "WHERE"} (customers.assigned_agent_id IS NULL OR customers.assigned_agent_id = '')`,
+      ...params
+    );
+
+    // Active agents customer counts
+    const agentStats = await db.all(`
+      SELECT 
+        a.id, a.id as agent_id, a.name, a.email, a.role,
+        (SELECT COUNT(*) FROM customers WHERE customers.assigned_agent_id = a.id) as assigned_count
+      FROM agents a
+      WHERE a.active = 1
+      ORDER BY assigned_count DESC, a.name ASC
+    `);
+
+    res.json({
+      totalCustomers: totalRow?.count || 0,
+      unassignedCount: unassignedRow?.count || 0,
+      agentStats
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/customers/assignment-history — Global assignment audit log
+router.get("/assignment-history", async (req, res, next) => {
+  try {
+    const { customer_id, limit = 100 } = req.query;
+    const limitNum = Math.max(1, Math.min(500, parseInt(limit, 10) || 100));
+
+    let sql = `
+      SELECT 
+        h.id, h.customer_id, h.assigned_at, h.assignment_type, h.notes,
+        c.name as customer_name, c.phone as customer_phone,
+        a_prev.name as prev_agent_name, a_prev.email as prev_agent_email,
+        a_new.name as new_agent_name, a_new.email as new_agent_email,
+        a_by.name as assigned_by_name
+      FROM customer_assignment_history h
+      JOIN customers c ON c.id = h.customer_id
+      LEFT JOIN agents a_prev ON a_prev.id = h.previous_agent_id
+      LEFT JOIN agents a_new ON a_new.id = h.new_agent_id
+      LEFT JOIN agents a_by ON a_by.id = h.assigned_by
+    `;
+    const params = [];
+    if (customer_id) {
+      sql += " WHERE h.customer_id = ?";
+      params.push(customer_id);
+    }
+    sql += ` ORDER BY h.assigned_at DESC LIMIT ${limitNum}`;
+
+    const history = await db.all(sql, ...params);
+    res.json({ history });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/customers/bulk-assign — Bulk assign customers to an agent
+router.post("/bulk-assign", async (req, res, next) => {
+  let connection;
+  try {
+    if (!isManagerOrAdmin(req.user)) {
+      return res.status(403).json({ error: "Forbidden: only managers and administrators can bulk assign customers" });
+    }
+
+    const { customer_ids, select_all_filtered, filters = {}, agent_id, notes } = req.body;
+    const rawAgentId = agent_id && agent_id !== "unassigned" && agent_id !== "undefined" ? String(agent_id).trim() : null;
+
+    let targetAgentName = "Unassigned";
+    let targetAgentId = null;
+    if (rawAgentId) {
+      const agent = await db.get(
+        "SELECT id, name, active FROM agents WHERE (id = ? OR email = ?) AND active = 1",
+        rawAgentId, rawAgentId
+      );
+      if (!agent) {
+        return res.status(400).json({ error: "Target agent does not exist or is inactive" });
+      }
+      targetAgentId = agent.id;
+      targetAgentName = agent.name;
+    }
+
+    let targetCustomerIds = [];
+    if (select_all_filtered) {
+      // Build filtered set across entire database
+      const brandFilter = getBrandCondition(req, "customers");
+      let conditionSql = `WHERE ${brandFilter.condition}`;
+      const params = brandFilter.params ? [...brandFilter.params] : (brandFilter.param ? [brandFilter.param] : []);
+
+      if (filters.q) {
+        conditionSql += " AND (customers.name LIKE ? OR customers.phone LIKE ?)";
+        params.push(`%${filters.q}%`, `%${filters.q}%`);
+      }
+      if (filters.segment && filters.segment !== "all") {
+        conditionSql += " AND customers.segment = ?";
+        params.push(filters.segment);
+      }
+      if (filters.source && filters.source !== "all") {
+        conditionSql += " AND customers.source = ?";
+        params.push(filters.source);
+      }
+      if (filters.assigned_agent_id && filters.assigned_agent_id !== "all") {
+        if (filters.assigned_agent_id === "unassigned") {
+          conditionSql += " AND (customers.assigned_agent_id IS NULL OR customers.assigned_agent_id = '')";
+        } else {
+          conditionSql += " AND customers.assigned_agent_id = ?";
+          params.push(filters.assigned_agent_id);
+        }
+      }
+
+      const matchingRows = await db.all(`SELECT customers.id FROM customers ${brandFilter.join} ${conditionSql}`, ...params);
+      targetCustomerIds = matchingRows.map(r => r.id);
+    } else if (Array.isArray(customer_ids) && customer_ids.length > 0) {
+      targetCustomerIds = customer_ids.filter(Boolean);
+    }
+
+    if (targetCustomerIds.length === 0) {
+      return res.status(400).json({ error: "No customers selected for assignment" });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    let assignedCount = 0;
+    let unchangedCount = 0;
+
+    // Process in batches of 500 for high performance
+    const batchSize = 500;
+    for (let i = 0; i < targetCustomerIds.length; i += batchSize) {
+      const batchIds = targetCustomerIds.slice(i, i + batchSize);
+      const placeholders = batchIds.map(() => "?").join(",");
+      const [existingCusts] = await connection.query(
+        `SELECT id, assigned_agent_id FROM customers WHERE id IN (${placeholders})`,
+        batchIds
+      );
+
+      for (const cust of existingCusts) {
+        const prevAgentId = cust.assigned_agent_id || null;
+        if (prevAgentId === targetAgentId) {
+          unchangedCount++;
+          continue;
+        }
+
+        const historyId = "cah_" + nanoid(10);
+        await connection.query(
+          `INSERT INTO customer_assignment_history 
+           (id, customer_id, previous_agent_id, new_agent_id, assigned_by, assignment_type, notes)
+           VALUES (?, ?, ?, ?, ?, 'bulk', ?)`,
+          [
+            historyId,
+            cust.id,
+            prevAgentId,
+            targetAgentId,
+            req.user.id,
+            notes || `Bulk assigned to ${targetAgentName} by ${req.user.name || req.user.email}`
+          ]
+        );
+        assignedCount++;
+      }
+
+      await connection.query(
+        `UPDATE customers SET assigned_agent_id = ?, updated_at = NOW() WHERE id IN (${placeholders})`,
+        [targetAgentId, ...batchIds]
+      );
+    }
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      totalSelected: targetCustomerIds.length,
+      assignedCount,
+      unchangedCount,
+      targetAgentId,
+      targetAgentName
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    next(err);
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// POST /api/customers/bulk-assign-csv — Bulk assign customers to agents via CSV file
+router.post("/bulk-assign-csv", async (req, res, next) => {
+  let connection;
+  try {
+    if (!isManagerOrAdmin(req.user)) {
+      return res.status(403).json({ error: "Forbidden: only managers and administrators can bulk assign via CSV" });
+    }
+
+    let rows = req.body.rows;
+    if (!rows && req.body.csvText) {
+      rows = parseCsvText(req.body.csvText);
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ error: "No CSV rows found to process" });
+    }
+
+    // Preload active agents map (by email and id)
+    const activeAgents = await db.all("SELECT id, name, email FROM agents WHERE active = 1");
+    const agentByEmail = new Map();
+    const agentById = new Map();
+    activeAgents.forEach(a => {
+      agentByEmail.set(a.email.toLowerCase().trim(), a);
+      agentById.set(a.id, a);
+    });
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    let assignedCount = 0;
+    let unchangedCount = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const rowNum = r._rowNumber || (i + 2);
+      
+      // Extract Customer Identifier
+      const custId = (r["Customer ID"] || r["customer_id"] || r["CustomerId"] || r["ID"] || r["id"] || "").trim();
+      let phone = (r["Customer Phone"] || r["customer_phone"] || r["Phone"] || r["phone"] || r["Mobile"] || "").trim();
+      
+      // Extract Agent Identifier
+      const agentEmail = (r["Agent Email"] || r["agent_email"] || r["Email"] || r["email"] || "").trim().toLowerCase();
+      const agentId = (r["Agent ID"] || r["agent_id"] || "").trim();
+
+      if (!custId && !phone) {
+        errors.push({
+          row: rowNum,
+          customer_ref: "Empty",
+          agent_ref: agentEmail || agentId || "Unassigned",
+          reason: "Row is missing both Customer ID and Customer Phone"
+        });
+        continue;
+      }
+
+      // Resolve Agent
+      let targetAgent = null;
+      let isExplicitUnassign = agentEmail === "unassigned" || agentId === "unassigned" || (!agentEmail && !agentId);
+      
+      if (agentEmail && agentByEmail.has(agentEmail)) {
+        targetAgent = agentByEmail.get(agentEmail);
+      } else if (agentId && agentById.has(agentId)) {
+        targetAgent = agentById.get(agentId);
+      } else if (isExplicitUnassign) {
+        targetAgent = null;
+      } else {
+        errors.push({
+          row: rowNum,
+          customer_ref: custId || phone,
+          agent_ref: agentEmail || agentId,
+          reason: `Agent not found or inactive: '${agentEmail || agentId}'`
+        });
+        continue;
+      }
+
+      // Resolve Customer
+      let customer = null;
+      if (custId) {
+        const [cMatches] = await connection.query("SELECT id, name, phone, assigned_agent_id FROM customers WHERE id = ?", [custId]);
+        if (cMatches.length > 0) customer = cMatches[0];
+      }
+      if (!customer && phone) {
+        const cleanPhone = phone.replace(/[^0-9]/g, "");
+        const [pMatches] = await connection.query(
+          "SELECT id, name, phone, assigned_agent_id FROM customers WHERE phone = ? OR phone LIKE ?",
+          [phone, `%${cleanPhone.slice(-10)}`]
+        );
+        if (pMatches.length > 0) customer = pMatches[0];
+      }
+
+      if (!customer) {
+        errors.push({
+          row: rowNum,
+          customer_ref: custId || phone,
+          agent_ref: targetAgent?.name || "Unassigned",
+          reason: `Customer record not found for identifier '${custId || phone}'`
+        });
+        continue;
+      }
+
+      const prevAgentId = customer.assigned_agent_id || null;
+      const newAgentId = targetAgent?.id || null;
+
+      if (prevAgentId === newAgentId) {
+        unchangedCount++;
+        continue;
+      }
+
+      const historyId = "cah_" + nanoid(10);
+      await connection.query(
+        `INSERT INTO customer_assignment_history 
+         (id, customer_id, previous_agent_id, new_agent_id, assigned_by, assignment_type, notes)
+         VALUES (?, ?, ?, ?, ?, 'csv', ?)`,
+        [
+          historyId,
+          customer.id,
+          prevAgentId,
+          newAgentId,
+          req.user.id,
+          `CSV Bulk Assignment to ${targetAgent?.name || "Unassigned"}`
+        ]
+      );
+
+      await connection.query(
+        "UPDATE customers SET assigned_agent_id = ?, updated_at = NOW() WHERE id = ?",
+        [newAgentId, customer.id]
+      );
+      assignedCount++;
+    }
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      totalRows: rows.length,
+      assignedCount,
+      unchangedCount,
+      errorCount: errors.length,
+      errors
+    });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    next(err);
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // GET /api/customers/:id
-router.get("/:id", requireBrandAccess, async (req, res, next) => {
+router.get("/:id", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     // Make sure user has access to this customer via brand
     const brandFilter = getBrandCondition(req, "customers");
@@ -573,7 +937,7 @@ router.post("/", requireBrandAccess, async (req, res, next) => {
 });
 
 // POST /api/customers/:id/calls
-router.post("/:id/calls", requireBrandAccess, async (req, res, next) => {
+router.post("/:id/calls", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const { outcome, remarks, sale_amount, callback_date, objection_type, sentiment, decision_style, interest_level, call_duration_seconds, price_sensitivity, brand_id } = req.body;
     const validOutcomes = ["sold", "callback", "noanswer", "notinterested", "wrongnumber", "disconnected"];
@@ -638,7 +1002,7 @@ router.post("/:id/calls", requireBrandAccess, async (req, res, next) => {
 });
 
 // POST /api/customers/:id/tags
-router.post("/:id/tags", requireBrandAccess, async (req, res, next) => {
+router.post("/:id/tags", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const { tag, tag_type, brand_id } = req.body;
     if (!tag || !["health", "preference", "behavioral"].includes(tag_type)) {
@@ -668,7 +1032,7 @@ router.post("/:id/tags", requireBrandAccess, async (req, res, next) => {
 });
 
 // DELETE /api/customers/:id/tags/:tagId
-router.delete("/:id/tags/:tagId", requireBrandAccess, async (req, res, next) => {
+router.delete("/:id/tags/:tagId", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     await db.run("DELETE FROM customer_tags WHERE id = ? AND customer_id = ?", req.params.tagId, req.params.id);
     res.json({ deleted: true });
@@ -678,7 +1042,7 @@ router.delete("/:id/tags/:tagId", requireBrandAccess, async (req, res, next) => 
 });
 
 // GET /api/customers/:id/tags
-router.get("/:id/tags", requireBrandAccess, async (req, res, next) => {
+router.get("/:id/tags", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const tags = await getTags(req.params.id);
     res.json({ tags });
@@ -688,10 +1052,31 @@ router.get("/:id/tags", requireBrandAccess, async (req, res, next) => {
 });
 
 // PATCH /api/customers/:id
-router.patch("/:id", requireBrandAccess, async (req, res, next) => {
+router.patch("/:id", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const customer = await db.get("SELECT * FROM customers WHERE id = ?", req.params.id);
     if (!customer) return res.status(404).json({ error: "Customer not found" });
+
+    // Enforce role permission if reassigning agent
+    if ("assigned_agent_id" in req.body) {
+      if (!isManagerOrAdmin(req.user)) {
+        return res.status(403).json({ error: "Forbidden: only managers and administrators can reassign customers" });
+      }
+      const newAgentId = req.body.assigned_agent_id ? String(req.body.assigned_agent_id).trim() : null;
+      if (newAgentId !== (customer.assigned_agent_id || null)) {
+        await db.run(
+          `INSERT INTO customer_assignment_history 
+           (id, customer_id, previous_agent_id, new_agent_id, assigned_by, assignment_type, notes)
+           VALUES (?, ?, ?, ?, ?, 'manual', ?)`,
+          "cah_" + nanoid(10),
+          customer.id,
+          customer.assigned_agent_id || null,
+          newAgentId,
+          req.user.id,
+          req.body.notes || `Reassigned by ${req.user.name || req.user.email}`
+        );
+      }
+    }
 
     const allowed = [
       "name", "phone", "email", "age", "gender", "city", "segment", "source", "ltv", "last_order_date",
@@ -772,7 +1157,7 @@ router.delete("/:id", requireAdmin, async (req, res, next) => {
 // ─── CUSTOMER 360 ──────────────────────────────────────────────────────────
 
 // GET /api/customers/:id/360
-router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
+router.get("/:id/360", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const brandFilter = getBrandCondition(req, "customers");
     const checkSql = `SELECT customers.* FROM customers ${brandFilter.join} WHERE customers.id = ? AND ${brandFilter.condition} GROUP BY customers.id`;
@@ -898,7 +1283,13 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
     const brandLinks = await db.all("SELECT b.name as brand_name, cb.* FROM customer_brands cb JOIN brands b ON cb.brand_id = b.id WHERE cb.customer_id = ?", req.params.id);
 
     // 6. Calculate Financial & Customer Analytics Metrics
-    const totalOrders = unifiedOrders.length;
+    let effectiveTotalOrders = unifiedOrders.length;
+    if (effectiveTotalOrders === 0 && (customer.order_ids || customer.product_name || customer.last_order_date)) {
+      effectiveTotalOrders = customer.order_ids 
+        ? customer.order_ids.split(/[,;]/).map(s => s.trim()).filter(Boolean).length 
+        : 1;
+    }
+    const totalOrders = effectiveTotalOrders;
     const totalSpend = customer.ltv || 0;
     const aov = totalOrders > 0 ? Math.round(totalSpend / totalOrders) : 0;
     const repeatPurchasePct = totalOrders > 1 ? Math.round(((totalOrders - 1) / totalOrders) * 100) : 0;
@@ -1031,7 +1422,7 @@ router.get("/:id/360", requireBrandAccess, async (req, res, next) => {
 });
 
 // GET /api/customers/:id/timeline
-router.get("/:id/timeline", requireBrandAccess, async (req, res, next) => {
+router.get("/:id/timeline", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     // 1. Orders
     const orders = await db.all("SELECT id, order_date as date, 'order' as type, product_name as title, amount, quantity FROM purchase_history WHERE customer_id = ?", req.params.id);
@@ -1063,7 +1454,7 @@ router.get("/:id/timeline", requireBrandAccess, async (req, res, next) => {
 });
 
 // POST /api/customers/:id/notes
-router.post("/:id/notes", requireBrandAccess, async (req, res, next) => {
+router.post("/:id/notes", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const { content } = req.body;
     if (!content) return res.status(400).json({ error: "content is required" });
@@ -1079,7 +1470,7 @@ router.post("/:id/notes", requireBrandAccess, async (req, res, next) => {
 });
 
 // POST /api/customers/:id/followups
-router.post("/:id/followups", requireBrandAccess, async (req, res, next) => {
+router.post("/:id/followups", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const { due_date, reason, assigned_agent_id, brand_id, category_id } = req.body;
     if (!due_date) return res.status(400).json({ error: "due_date is required" });
@@ -1100,7 +1491,7 @@ router.post("/:id/followups", requireBrandAccess, async (req, res, next) => {
 });
 
 // POST /api/customers/:id/addresses
-router.post("/:id/addresses", requireBrandAccess, async (req, res, next) => {
+router.post("/:id/addresses", requireBrandAccess, requireCustomerAccess, async (req, res, next) => {
   try {
     const { type, full_address, landmark, city, state, country, pincode, is_default } = req.body;
     if (!full_address) return res.status(400).json({ error: "full_address is required" });

@@ -1,6 +1,7 @@
 import mysql from "mysql2/promise";
 import { nanoid } from "nanoid";
 import { runMigration02 } from "./migrations/02_sync_existing_customer_orders_to_purchase_history.js";
+import { runMigration03 } from "./migrations/03_create_customer_assignment_history.js";
 
 function formatDbUri(uri) {
   if (!uri) return uri;
@@ -1217,6 +1218,9 @@ async function migrateExistingColumns() {
 
   // Sync existing customer order_ids to purchase_history so orders can be tracked/updated individually
   await runMigration02();
+
+  // Create customer assignment history table and indexes
+  await runMigration03();
 }
 
 
