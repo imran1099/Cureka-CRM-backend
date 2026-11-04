@@ -268,6 +268,208 @@ router.get("/", requireBrandAccess, async (req, res, next) => {
   }
 });
 
+// Helper to escape CSV field values safely
+function escapeCsv(val) {
+  if (val === null || val === undefined) return "";
+  const str = String(val);
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r") || str.includes(";")) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+// GET /api/customers/export — Export customer data to CSV with customer ID and all details
+async function handleCustomerExport(req, res, next) {
+  try {
+    const q = req.query.q || req.body?.q;
+    const segment = req.query.segment || req.body?.segment;
+    const source = req.query.source || req.body?.source;
+    const assigned_agent_id = req.query.assigned_agent_id || req.body?.assigned_agent_id;
+    let customer_ids = req.query.customer_ids || req.body?.customer_ids;
+
+    if (typeof customer_ids === "string") {
+      customer_ids = customer_ids.split(",").map(id => id.trim()).filter(Boolean);
+    }
+
+    const brandFilter = getBrandCondition(req, "customers");
+    let conditionSql = `WHERE ${brandFilter.condition}`;
+    const params = brandFilter.params ? [...brandFilter.params] : (brandFilter.param ? [brandFilter.param] : []);
+
+    if (Array.isArray(customer_ids) && customer_ids.length > 0) {
+      const placeholders = customer_ids.map(() => "?").join(",");
+      conditionSql += ` AND customers.id IN (${placeholders})`;
+      params.push(...customer_ids);
+    }
+
+    if (q) {
+      conditionSql += " AND (customers.name LIKE ? OR customers.phone LIKE ? OR customers.id LIKE ?)";
+      params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+    }
+    if (segment && segment !== "all") {
+      conditionSql += " AND customers.segment = ?";
+      params.push(segment);
+    }
+    if (source && source !== "all") {
+      conditionSql += " AND customers.source = ?";
+      params.push(source);
+    }
+
+    // Role-based scoping: non-managers can strictly ONLY export their assigned customers!
+    if (!isManagerOrAdmin(req.user)) {
+      conditionSql += " AND customers.assigned_agent_id = ?";
+      params.push(req.user.id);
+    } else if (assigned_agent_id && assigned_agent_id !== "all") {
+      if (assigned_agent_id === "unassigned") {
+        conditionSql += " AND (customers.assigned_agent_id IS NULL OR customers.assigned_agent_id = '')";
+      } else {
+        conditionSql += " AND customers.assigned_agent_id = ?";
+        params.push(assigned_agent_id);
+      }
+    }
+
+    const sql = `
+      SELECT 
+        customers.*,
+        a.name as agent_name,
+        a.email as agent_email,
+        (SELECT COUNT(*) FROM purchase_history WHERE customer_id = customers.id) as order_count,
+        (SELECT GROUP_CONCAT(DISTINCT order_ref SEPARATOR ', ') FROM purchase_history WHERE customer_id = customers.id) as ph_order_ids
+      FROM customers
+      LEFT JOIN agents a ON a.id = customers.assigned_agent_id
+      ${brandFilter.join}
+      ${conditionSql}
+      GROUP BY customers.id
+      ORDER BY customers.created_at DESC
+    `;
+
+    const rows = await db.all(sql, ...params);
+
+    const exportHeaders = [
+      "Customer ID",
+      "Customer Name",
+      "Phone",
+      "Email",
+      "Age",
+      "Gender",
+      "City",
+      "Segment",
+      "Source",
+      "Lifetime Value (LTV)",
+      "Total Orders",
+      "Order IDs",
+      "Product Name",
+      "SKU",
+      "Order Status",
+      "Last Order Date",
+      "Replenish Due Date",
+      "Assigned Agent ID",
+      "Assigned Agent Name",
+      "Assigned Agent Email",
+      "Cart Value",
+      "Cart Items",
+      "Cart Abandoned At",
+      "Callback Date",
+      "Do Not Call",
+      "Health Conditions",
+      "Product Preferences",
+      "Allergies & Restrictions",
+      "Preferred Contact Time",
+      "Preferred Language",
+      "Household Notes",
+      "Price Sensitivity",
+      "Shopify Customer ID",
+      "Customer Since",
+      "Health Score",
+      "Created At",
+      "Updated At"
+    ];
+
+    const csvLines = [
+      exportHeaders.join(","),
+      ...rows.map((c) => {
+        let healthConditions = c.health_conditions;
+        try {
+          const parsed = JSON.parse(healthConditions);
+          if (Array.isArray(parsed)) healthConditions = parsed.join("; ");
+        } catch (e) {}
+
+        let productPreferences = c.product_preferences;
+        try {
+          const parsed = JSON.parse(productPreferences);
+          if (Array.isArray(parsed)) productPreferences = parsed.join("; ");
+        } catch (e) {}
+
+        let cartItems = c.cart_items;
+        try {
+          const parsed = JSON.parse(cartItems);
+          if (Array.isArray(parsed)) {
+            cartItems = parsed.map(item => typeof item === "string" ? item : (item.name || item.title || JSON.stringify(item))).join("; ");
+          }
+        } catch (e) {}
+
+        const combinedOrderIds = c.ph_order_ids || c.order_ids || "";
+        const orderCount = c.order_count > 0 
+          ? c.order_count 
+          : (combinedOrderIds ? combinedOrderIds.split(/[,;]/).map(s => s.trim()).filter(Boolean).length : (c.product_name ? 1 : 0));
+
+        return [
+          escapeCsv(c.id),
+          escapeCsv(c.name),
+          escapeCsv(c.phone),
+          escapeCsv(c.email),
+          escapeCsv(c.age),
+          escapeCsv(c.gender),
+          escapeCsv(c.city),
+          escapeCsv(c.segment),
+          escapeCsv(c.source),
+          escapeCsv(c.ltv || 0),
+          escapeCsv(orderCount),
+          escapeCsv(combinedOrderIds),
+          escapeCsv(c.product_name || ""),
+          escapeCsv(c.sku || ""),
+          escapeCsv(c.order_status || "Delivered"),
+          escapeCsv(c.last_order_date || ""),
+          escapeCsv(c.replenish_due_date || ""),
+          escapeCsv(c.assigned_agent_id || ""),
+          escapeCsv(c.agent_name || (c.assigned_agent_id ? "" : "Unassigned")),
+          escapeCsv(c.agent_email || ""),
+          escapeCsv(c.cart_value || ""),
+          escapeCsv(cartItems || ""),
+          escapeCsv(c.cart_abandoned_at || ""),
+          escapeCsv(c.callback_date || ""),
+          escapeCsv(c.do_not_call ? "Yes" : "No"),
+          escapeCsv(healthConditions || ""),
+          escapeCsv(productPreferences || ""),
+          escapeCsv(c.allergies_restrictions || ""),
+          escapeCsv(c.preferred_contact_time || ""),
+          escapeCsv(c.preferred_language || ""),
+          escapeCsv(c.household_notes || ""),
+          escapeCsv(c.price_sensitivity || ""),
+          escapeCsv(c.shopify_customer_id || ""),
+          escapeCsv(c.customer_since || ""),
+          escapeCsv(c.health_score || ""),
+          escapeCsv(c.created_at || ""),
+          escapeCsv(c.updated_at || "")
+        ].join(",");
+      })
+    ];
+
+    const csvContent = "\uFEFF" + csvLines.join("\r\n");
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr = now.toTimeString().slice(0, 8).replace(/:/g, "");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="customers_export_${dateStr}_${timeStr}.csv"`);
+    res.status(200).send(csvContent);
+  } catch (err) {
+    next(err);
+  }
+}
+
+router.get("/export", requireBrandAccess, handleCustomerExport);
+router.post("/export", requireBrandAccess, handleCustomerExport);
+
 // GET /api/customers/sample-csv — download sample CSV template for bulk import
 router.get("/sample-csv", (req, res) => {
   const csvHeaders = "name,phone,email,age,gender,city,segment,source,ltv,last_order_date,replenish_due_date,cart_value,cart_items,cart_abandoned_at,health_conditions,product_preferences,allergies_restrictions,preferred_contact_time,preferred_language,household_notes,price_sensitivity,product_name,sku,order_ids";

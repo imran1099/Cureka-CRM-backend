@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "seed": "node src/db/seed.js",
     "test:orders": "node --env-file=.env test_all_order_status_cases.js",
-    "test:assignment": "node --env-file=.env test_bulk_assignment_system.js"
+    "test:assignment": "node --env-file=.env test_bulk_assignment_system.js",
+    "test:export": "node --env-file=.env test_customer_export.js"
   },
   "dependencies": {
     "axios": "^1.18.1",
